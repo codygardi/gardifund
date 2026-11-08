@@ -2,7 +2,7 @@
 
 A single-user Windows investment workspace. FastAPI serves the compiled React application and API on `127.0.0.1`; a single in-process worker runs persisted jobs even when the browser is closed. SQLite uses WAL for account, settings, schedules, metadata and events. Market bars are stored in Parquet and queried with DuckDB. The only Tradier integration is the backend adapter. **There is no live order-submission endpoint.**
 
-The public [GitHub Pages entry page](https://codygardi.github.io/GardiFund/) opens the protected, read-only workspace. See [Pages and live synchronization](deploy/github-pages.md) and the [Cloudflare setup without a domain purchase](deploy/free-cloudflare.md). Portfolio data stays in the running local app and is never published as GitHub commits or static snapshots.
+The public [GitHub Pages entry page](https://codygardi.github.io/gardifund/) opens the protected, read-only workspace. See [Pages and live synchronization](deploy/github-pages.md) and the [Cloudflare setup without a domain purchase](deploy/free-cloudflare.md). Portfolio data stays in the running local app and is never published as GitHub commits or static snapshots.
 
 ## Install and run
 

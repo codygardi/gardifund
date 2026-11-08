@@ -1,8 +1,8 @@
 # GitHub Pages and the live workspace
 
-Repository: `https://github.com/codygardi/GardiFund`
+Repository: `https://github.com/codygardi/gardifund`
 
-Public entry page: `https://codygardi.github.io/GardiFund/`
+Public entry page: `https://codygardi.github.io/gardifund/`
 
 GitHub Pages is the public launch page. Its button opens the Cloudflare-protected WAN app, which has exactly three navigation items: Overview, Charts, and Back Test. The full React app and FastAPI backend continue to run on Windows. Local investing, settings and database controls are not part of the public Pages artifact.
 

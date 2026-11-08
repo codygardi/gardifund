@@ -35,7 +35,7 @@ npx wrangler deploy --config deploy/worker/wrangler.generated.json
 
 The generated file is ignored by Git. The generator rejects placeholders and never loads `.env`, copies backend credentials, or includes static assets.
 
-If deploying through **Cloudflare Builds connected to GitHub**, use these settings for `codygardi/GardiFund`:
+If deploying through **Cloudflare Builds connected to GitHub**, use these settings for `codygardi/gardifund`:
 
 | Setting | Value |
 | --- | --- |
