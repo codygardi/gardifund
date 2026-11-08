@@ -8,7 +8,7 @@ GitHub Pages is the public launch page. Its button opens the Cloudflare-protecte
 
 ```text
 GitHub Pages launch page
-  -> Access-protected gardifund-view.YOUR-SUBDOMAIN.workers.dev
+  -> Access-protected gardifund.codygardi22.workers.dev
   -> thin read-only Worker
   -> private Cloudflare Tunnel / VPC Service
   -> local read-only listener, 127.0.0.1:8766
@@ -29,7 +29,7 @@ After configuring Cloudflare using [the free-plan setup](free-cloudflare.md), op
 GARDIFUND_DASHBOARD_URL
 ```
 
-Set it to the public HTTPS Worker address, such as `https://gardifund-view.YOUR-SUBDOMAIN.workers.dev/`. This address is public configuration, not a token. Do not put API keys or tunnel credentials into this variable. Run **Actions > Verify and publish > Run workflow** to republish the launch page. Test the button from another network.
+Set it to `https://gardifund.codygardi22.workers.dev/`. This address is public configuration, not a token. Do not put API keys or tunnel credentials into this variable. Run **Actions > Verify and publish > Run workflow** to republish the launch page. Test the button from another network. The address must run the gateway with a VPC Service and Access policy; a static copy of the app alone cannot synchronize data.
 
 GitHub Pages must use **GitHub Actions** as its build source. GitHub Free supports Pages from public repositories; this repository was explicitly requested to be public. See [Pages publishing workflows](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages).
 

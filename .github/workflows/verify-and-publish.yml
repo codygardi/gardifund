@@ -35,7 +35,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: python -m pytest -q
-      - run: node --test tests/edge_proxy.test.mjs
+      - run: node --test tests/edge_proxy.test.mjs tests/worker_config.test.mjs
       - run: python scripts/stress-test.py
       - run: python scripts/build-pages.py
 

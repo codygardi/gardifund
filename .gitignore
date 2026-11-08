@@ -9,6 +9,7 @@ pages-dist/
 .wrangler/
 .dev.vars*
 deploy/worker/wrangler.local.json
+deploy/worker/wrangler.generated.json
 data/
 backups/
 __pycache__/

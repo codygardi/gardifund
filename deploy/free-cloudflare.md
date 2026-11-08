@@ -23,13 +23,33 @@ Record the returned service ID. Never choose port 8765. Use a fixed VPC **Servic
 
 ## 3. Deploy the gateway and protect its hostname
 
-Copy `deploy/worker/wrangler.example.json` to `deploy/worker/wrangler.local.json`, which is ignored by Git. Replace the service-ID placeholder with your ID. The gateway name defaults to `gardifund-view`; its address will be `https://gardifund-view.YOUR-SUBDOMAIN.workers.dev`.
+Your Worker is named **gardifund**, at `https://gardifund.codygardi22.workers.dev/`. It must execute `deploy/worker/worker.js` and connect through the VPC Service. Uploading the compiled `dist/` folder alone serves the interface without its data connection: `/scope` and `/view/state` will return HTML instead of the required JSON or authentication denial.
+
+For a local deployment, set the non-secret service ID and generate the configuration:
 
 ```powershell
-npx wrangler deploy --config deploy/worker/wrangler.local.json
+$env:GARDIFUND_VPC_SERVICE_ID = 'YOUR-VPC-SERVICE-UUID'
+node scripts/build-worker-config.mjs
+npx wrangler deploy --config deploy/worker/wrangler.generated.json
 ```
 
-Under **Workers & Pages > gardifund-view > Settings > Domains & Routes**, enable Cloudflare Access for the production `workers.dev` address. Protect all production traffic and keep preview URLs disabled. Restrict the Allow policy to the identities you intend to share with. Configure MFA at the Access application and check that no matching Allow policy exempts it. See [Access for Workers](https://developers.cloudflare.com/workers/configuration/cloudflare-access/) and [MFA requirements](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/mfa-requirements/).
+The generated file is ignored by Git. The generator rejects placeholders and never loads `.env`, copies backend credentials, or includes static assets.
+
+If deploying through **Cloudflare Builds connected to GitHub**, use these settings for `codygardi/GardiFund`:
+
+| Setting | Value |
+| --- | --- |
+| Production branch | `main` |
+| Root directory | Repository root |
+| Build command | `node scripts/build-worker-config.mjs` |
+| Deploy command | `npx wrangler deploy --config deploy/worker/wrangler.generated.json` |
+| Build variable | `GARDIFUND_VPC_SERVICE_ID` = the VPC Service UUID from step 2 |
+
+Remove any deploy setting that uploads `dist/` as static assets. The local Windows app already serves the UI through the viewing listener. The service ID identifies the connection and is not a tunnel token; keep API keys and tunnel credentials out of build variables and source.
+
+Cloudflare runs the build command before the deploy command, and build variables are available to the configuration generator. See [Workers Builds configuration](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/).
+
+Under **Workers & Pages > gardifund > Settings > Domains & Routes**, enable Cloudflare Access for the production `workers.dev` address. Protect all production traffic and keep preview URLs disabled. Restrict the Allow policy to the identities you intend to share with. Configure MFA at the Access application and check that no matching Allow policy exempts it. See [Access for Workers](https://developers.cloudflare.com/workers/configuration/cloudflare-access/) and [MFA requirements](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/mfa-requirements/).
 
 Before Access and backend settings match, the gateway fails closed: no assertion returns 401, and missing backend Access configuration returns 503. It never falls back to local control or anonymous account data.
 
@@ -47,7 +67,7 @@ Use the audience for this Worker's production Access application. The team domai
 
 ## 5. Link Pages and verify real synchronization
 
-Set the GitHub repository variable `GARDIFUND_DASHBOARD_URL` to this Worker's HTTPS address and rerun the Pages workflow, as described in [the Pages guide](github-pages.md).
+Set the GitHub repository variable `GARDIFUND_DASHBOARD_URL` to `https://gardifund.codygardi22.workers.dev/` and rerun the Pages workflow, as described in [the Pages guide](github-pages.md). Linking the address does not itself create the Tunnel, VPC binding or Access policy.
 
 Open the Pages URL from a phone on cellular data. Follow its dashboard button, complete Access sign-in and MFA, and confirm the WAN app shows exactly **Overview, Charts, Back Test**. Verify both Live and Shadow Overview views load and show source timestamps. Open the local app and verify a refreshed local account/portfolio snapshot appears remotely through SSE. A `/api/state` request to the Worker must return 403, even after login. The remote app must provide no investing, settings, database, reset or order controls.
 
