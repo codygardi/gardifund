@@ -1,13 +1,16 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { readWorkspaceResponse } from './dataResponse';
 
 // The server selects this scope from the actual listening socket, never from a
 // caller-supplied hostname. The result only selects the presentation URLs.
-const scope = fetch('/scope').then(async response => {
-  if (!response.ok) throw new Error('Workspace access is unavailable');
-  const value = await response.json();
-  if (value.access_scope !== 'local' && value.access_scope !== 'remote') throw new Error('Unknown workspace scope');
-  return value.access_scope as 'local' | 'remote';
-});
+let scope: Promise<'local' | 'remote'> | undefined;
+function accessScope() {
+  if (!scope) scope = fetch('/scope').then(readWorkspaceResponse).then(value => {
+    if (value.access_scope !== 'local' && value.access_scope !== 'remote') throw new Error('The workspace data connection is not configured. Connect the data service, then reload.');
+    return value.access_scope as 'local' | 'remote';
+  }).catch(error => { scope = undefined; throw error; });
+  return scope;
+}
 
 export async function api(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
@@ -15,10 +18,8 @@ export async function api(path: string, init: RequestInit = {}) {
     headers.set('X-Gardifund-Request', '1');
     if (!(init.body instanceof FormData)) headers.set('Content-Type', 'application/json');
   }
-  const response = await fetch(`${await scope === 'local' ? '/api' : '/view'}${path}`, { ...init, headers });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Request failed');
-  return data;
+  const response = await fetch(`${await accessScope() === 'local' ? '/api' : '/view'}${path}`, { ...init, headers });
+  return readWorkspaceResponse(response);
 }
 
 type Context = { state: any; revision: number; resourceVersions:Record<string,number>; marketVersions: Record<string, number>; connected: boolean; refresh: () => void; mode: 'live' | 'shadow'; setMode: (v: 'live' | 'shadow') => void; theme:string; setTheme:(v:'dark'|'light') => void };
@@ -44,7 +45,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     // Re-read the current state after reconnecting so an event missed during a
     // disconnection cannot leave a temporary discovery snapshot stale.
-    scope.then(value => {
+    accessScope().then(value => {
       if (!active) return;
       source = new EventSource(`${value === 'local' ? '/api' : '/view'}/events`);
       source.onopen = () => { setConnected(true); refresh(); };

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
+    "test": "node --test tests/edge_proxy.test.mjs tests/worker_config.test.mjs tests/data_response.test.mjs tests/overview_loading.test.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
