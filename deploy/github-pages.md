@@ -15,7 +15,9 @@ GitHub Pages launch page
   -> cached Overview and Charts + SSE
 ```
 
-Overview synchronization occurs through the live connection, while the Windows app and Tunnel are running. It does not require pushing account data or commits to GitHub. Changes to the app's source are versioned in Git; the public launch page changes only when its static files or dashboard URL are republished. These are separate operations.
+Overview and Charts read selected, sanitized data from the local SQLite/Parquet store through JSON endpoints and SSE while the Windows app and Tunnel are running. The viewing service reads cached data; remote viewers cannot call Tradier, submit orders or administer the database. Back Test is a placeholder and has no results to synchronize yet. The raw database files stay local. Synchronization does not require pushing account data or commits to GitHub. Changes to the app's source are versioned in Git; the public launch page changes only when its static files or dashboard URL are republished. These are separate operations.
+
+Use the same protected shared link on another LAN device or on the Internet. Only the Windows PC gets the full seven-module workspace at `http://127.0.0.1:8765/`. The launch page and new workspaces default to light mode; a saved dark-mode choice remains available.
 
 ## Publish and update the entry page
 

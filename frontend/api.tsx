@@ -34,8 +34,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [marketVersions, setMarketVersions] = useState<Record<string, number>>({});
   const [connected, setConnected] = useState(false);
   const [mode, setMode] = useState<'live' | 'shadow'>('live');
-  const [themeOverride, setThemeOverride] = useState(() => { try { return localStorage.getItem('gardifund-theme') || ''; } catch { return ''; } });
-  const theme = themeOverride || state?.settings?.appearance || 'dark';
+  const [themeOverride, setThemeOverride] = useState(() => { try { const value = localStorage.getItem('gardifund-theme'); return value === 'light' || value === 'dark' ? value : ''; } catch { return ''; } });
+  const theme = themeOverride || state?.settings?.appearance || 'light';
   const setTheme = useCallback((value:'dark'|'light') => { setThemeOverride(value); try { localStorage.setItem('gardifund-theme',value); } catch { /* The selection still applies for this session. */ } },[]);
   const refresh = useCallback(() => setRevision(v => v + 1), []);
   useEffect(() => { api('/state').then(setState).catch(() => setState(null)); }, [revision, stateRevision]);
@@ -66,7 +66,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }).catch(() => setConnected(false));
     return () => { active = false; source?.close(); if (timer) clearTimeout(timer); };
   }, [refresh]);
-  useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'light' ? '#eef2eb' : '#111713');
+  }, [theme]);
   return <AppContext.Provider value={{ state, revision, resourceVersions, marketVersions, connected, refresh, mode, setMode, theme, setTheme }}>{children}</AppContext.Provider>;
 }
 

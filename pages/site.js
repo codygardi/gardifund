@@ -2,7 +2,7 @@ const themeButton = document.querySelector('#theme');
 const themeLabel = document.querySelector('#theme-label');
 let theme;
 try { theme = localStorage.getItem('gardifund-launch-theme'); } catch { /* Session-only theme still works. */ }
-if (!['light', 'dark'].includes(theme)) theme = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+if (!['light', 'dark'].includes(theme)) theme = 'light';
 function applyTheme() {
   document.documentElement.dataset.theme = theme;
   themeLabel.textContent = theme === 'dark' ? 'Light mode' : 'Dark mode';

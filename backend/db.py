@@ -166,7 +166,7 @@ class Database:
                 conn.execute("UPDATE shadow_positions SET category='etf' WHERE symbol='SPY'")
                 conn.execute('INSERT INTO migrations VALUES(?)', (migration,))
             defaults = {"discovery_minutes": 5, "account_minutes": 15, "top_n": 10,
-                        "appearance": "dark", "market_session": "regular"}
+                        "appearance": "light", "market_session": "regular"}
             for key, value in defaults.items():
                 conn.execute("INSERT OR IGNORE INTO settings VALUES (?, ?)", (key, json.dumps(value)))
             if json.loads(conn.execute("SELECT value FROM settings WHERE key='top_n'").fetchone()[0]) > 10:
