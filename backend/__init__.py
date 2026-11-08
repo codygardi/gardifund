@@ -1,0 +1,1 @@
+"""GARDiFUND local service."""
