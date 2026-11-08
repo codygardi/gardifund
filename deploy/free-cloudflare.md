@@ -49,7 +49,7 @@ Remove any deploy setting that uploads `dist/` as static assets. The local Windo
 
 Cloudflare runs the build command before the deploy command, and build variables are available to the configuration generator. See [Workers Builds configuration](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/).
 
-Under **Workers & Pages > gardifund > Settings > Domains & Routes**, enable Cloudflare Access for the production `workers.dev` address. Protect all production traffic and keep preview URLs disabled. Restrict the Allow policy to the identities you intend to share with. Configure MFA at the Access application and check that no matching Allow policy exempts it. See [Access for Workers](https://developers.cloudflare.com/workers/configuration/cloudflare-access/) and [MFA requirements](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/mfa-requirements/).
+Under **Workers & Pages > gardifund > Access**, choose **Protect this Worker behind Access** and **All traffic**. Keep preview URLs disabled. Restrict the Allow policy to the identities you intend to share with. Configure MFA at the Access application and check that no matching Allow policy exempts it. [Access for Workers](https://developers.cloudflare.com/workers/configuration/cloudflare-access/) · [MFA requirements](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/mfa-requirements/).
 
 Before Access and backend settings match, the gateway fails closed: no assertion returns 401, and missing backend Access configuration returns 503. It never falls back to local control or anonymous account data.
 
@@ -68,6 +68,14 @@ Use the audience for this Worker's production Access application. The team domai
 ## 5. Link Pages and verify real synchronization
 
 Set the GitHub repository variable `GARDIFUND_DASHBOARD_URL` to `https://gardifund.codygardi22.workers.dev/` and rerun the Pages workflow, as described in [the Pages guide](github-pages.md). Linking the address does not itself create the Tunnel, VPC binding or Access policy.
+
+Run the anonymous connection check from the workspace on the Windows PC.
+
+```powershell
+.\scripts\check-connections.ps1 -RemoteUrl https://gardifund.codygardi22.workers.dev
+```
+
+The check requires port 8766 to return 401 and the public page and `/scope` to redirect to Access sign-in or deny the anonymous request. An unavailable endpoint or static HTML at `/scope` returns exit code 1. Finish the check by signing in and observing live updates.
 
 Open the Pages URL from a phone on cellular data. Follow its dashboard button, complete Access sign-in and MFA, and confirm the WAN app shows exactly **Overview, Charts, Back Test**. Verify both Live and Shadow Overview views load and show source timestamps. Open the local app and verify a refreshed local account/portfolio snapshot appears remotely through SSE. A `/api/state` request to the Worker must return 403, even after login. The remote app must provide no investing, settings, database, reset or order controls.
 

@@ -82,7 +82,9 @@ The local **Reset Shadow** button archives the current simulated ledger, cancels
 .\scripts\check-connections.ps1 -RemoteUrl https://gardifund.codygardi22.workers.dev
 ```
 
-Before Cloudflare is configured, local port 8765 should return 200 and the read-only origin on 8766 should return 503 without a JWT. After configuration it should return 401 without a JWT. An anonymous external request should lead to Access sign-in or be denied. The check script detects a static-only deployment when `/scope` returns HTML and exits with a clear connection error. For the existing Worker, use the exact build/deploy commands and VPC service-ID variable in [the Cloudflare guide](deploy/free-cloudflare.md). From a phone on cellular data or another network, complete MFA, verify Overview and Charts load, and confirm Investing, News, Database, Settings and reset/trade controls are absent. In the authenticated remote browser, a GET to `/api/state` must still return 403; a POST to `/api/shadow/reset` must return 403. `/healthz` is intentionally only a basic readiness check and does not establish Access protection.
+The local check requires HTTP 200 and JSON from the control listener on port 8765. In local-only mode the viewing listener can be absent. In Cloudflare mode it returns 503 before Access is configured and 401 for an unauthenticated request after configuration. With `-RemoteUrl`, the script requires the configured viewing listener and checks that the public page and `/scope` redirect to Access sign-in or deny the anonymous request. It exits with code 1 for an unavailable or unexpected endpoint, including a static HTML response from `/scope`. Use the build commands and VPC service ID variable in [the Cloudflare guide](deploy/free-cloudflare.md).
+
+Finish verification from a phone on cellular data or another network. Complete MFA, verify Overview and Charts load and update, and confirm Investing, News, Database, Settings and reset/trade controls are absent. In the authenticated remote browser, both a GET to `/api/state` and a POST to `/api/shadow/reset` must return 403.
 
 For a named local tunnel, the user-run setup is typically:
 
