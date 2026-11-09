@@ -14,7 +14,7 @@ def main():
         raise ValueError("Local and remote listener ports must differ")
     app = create_app(settings)
     addresses = [("127.0.0.1", settings.local_port)]
-    if settings.auth_mode == "cloudflare":
+    if settings.auth_mode != "local":
         addresses.append(settings.viewing_address)
     sockets = []
     try:

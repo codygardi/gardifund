@@ -2,7 +2,7 @@
 
 A single-user Windows investment workspace. FastAPI serves the compiled React application and control API on `127.0.0.1`. One worker in the same process runs persisted jobs even when the browser is closed. SQLite uses WAL for account, settings, schedules, metadata and events. Market bars are stored in Parquet and queried with DuckDB. The backend adapter reads Tradier data. **Live order submission is disabled.**
 
-The public GitHub Pages entry point opens a read-only dashboard protected by Cloudflare Access. The Windows app supplies cached portfolio and chart data while it runs. [GitHub Pages and Worker setup](deploy/github-pages.md)
+GitHub Pages serves the public read-only dashboard. The Windows app supplies cached aggregate portfolio and chart data while it runs. [GitHub Pages and Worker setup](deploy/github-pages.md)
 
 ## Install and run
 
@@ -20,9 +20,9 @@ To run the app in the foreground, use the startup script:
 .\scripts\start.ps1
 ```
 
-Open `http://127.0.0.1:8765/`. The control listener accepts loopback clients and loopback hostnames and rejects common proxy headers. Stop a foreground session with Ctrl+C. The default is local-only. When `GARDIFUND_AUTH_MODE=cloudflare` is configured in `.env`, the same process also serves the read-only viewer on `127.0.0.1:8766`. Pass `-LocalDev` to force local-only mode for a foreground run. An OS lock protects the data directory from a second worker.
+Open `http://127.0.0.1:8765/`. The control listener accepts loopback clients and loopback hostnames and rejects common proxy headers. Stop a foreground session with Ctrl+C. The default is local-only. When `GARDIFUND_AUTH_MODE=public` is configured in `.env`, the same process also serves the read-only viewer on `127.0.0.1:8766`. Pass `-LocalDev` to force local-only mode for a foreground run. An OS lock protects the data directory from a second worker.
 
-The full seven-module workspace is available on this Windows PC. Other devices open the Pages link and sign in to the shared Overview, Charts and Back Test dashboard.
+The full seven-module workspace is available on this Windows PC. Other devices open the GitHub Pages dashboard for Overview, Charts and Back Test.
 
 If the `GARDiFUND` scheduled task is already running, stop it with `Stop-ScheduledTask -TaskName GARDiFUND` before starting a separate session. Afterward, resume the background task with `Start-ScheduledTask -TaskName GARDiFUND`.
 
@@ -38,11 +38,11 @@ Run the following once in your own Windows account (Cloudflare can be configured
 
 This registers a Task Scheduler task named `GARDiFUND` for the current user's sign-in with restart-on-failure. It reads the access mode from `.env` and refuses to replace a task with the same name. The launcher uses a Windows process job so stopping the task also terminates its Python worker descendants. Manage or remove it in Task Scheduler. For remote sharing, run `cloudflared` separately as a Windows service. [Windows connector instructions](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/as-a-service/windows/)
 
-## Cloudflare Tunnel, Access, and MFA
+## Public dashboard
 
-Configure the Worker and an Access policy requiring MFA. Bind it to a Tunnel VPC Service scoped to the Windows viewer on port 8766. [Setup guide](deploy/github-pages.md)
+Bind the public Worker to a Tunnel VPC Service scoped to the Windows viewer on port 8766. Pages loads the three public modules directly in the browser. [Setup guide](deploy/github-pages.md)
 
-The loopback viewer validates RS256 Access JWT signatures, issuer, audience and expiry for the UI, assets, views and SSE. The Worker and viewer reject `/api/*` and mutations, including requests with valid JWTs. Overview shares aggregate Live and Shadow metrics by default, Charts reads stored market data, and Back Test is a placeholder. Account identifiers, raw broker payloads, private notes, archived ledgers and credentials stay local. SSE strips private event details and closes at token expiry or after one minute. The control listener rejects proxied requests and checks the origin of mutations. [Cloudflare origin JWT validation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)
+The Worker and loopback viewer permit a fixed set of read-only projections and SSE. Overview shares aggregate Live and Shadow metrics, Charts reads stored market data, and Back Test is a placeholder. Account identifiers, raw broker payloads, private notes, archived ledgers and credentials stay local. SSE strips private event details. The control listener rejects proxied requests and checks the origin of mutations.
 
 ## Data behavior and limits
 
@@ -74,7 +74,7 @@ The local **Reset Shadow** button archives the current simulated ledger, cancels
 .\scripts\check-connections.ps1 -RemoteUrl https://gardifund.YOUR-SUBDOMAIN.workers.dev/
 ```
 
-The local endpoints should return 200 and JSON. The configured viewer must return 401 for an anonymous request. Finish verification from another network by completing MFA and observing live updates in Overview and Charts. The dashboard shows an offline screen when the Worker cannot reach the local service. [Verification steps](deploy/github-pages.md#link-and-verify)
+The local endpoints and public viewer should return JSON and HTTP 200. The public Worker permits the Pages browser origin and denies control API requests. Verify live updates and the offline screen from another network. [Verification steps](deploy/github-pages.md#3-open-the-dashboard)
 
 ## Import formats
 
@@ -115,11 +115,11 @@ npm test
 npm run build
 ```
 
-The tests cover signed Access JWTs, token-bound SSE expiry, local responsiveness during signing-key retrieval, socket separation, proxy header spoofing, read-only views, mutation restrictions, secret exclusion and backups. They also cover Live and Shadow separation, market and limit orders in Shadow, scheduled job recovery, SPY discovery, imports, historical rankings and attribution. Run `.\.venv\Scripts\python.exe scripts\stress-test.py` for a 330-request, 16-client load with isolated data, real sockets, a signed test JWT and one worker. It includes local and remote performance queries, writes `data/verification-stress.json` and removes its temporary dataset. `scripts/qa-server.py` is an isolated visual test server on ports 18765 and 18766 with synthetic data and test-only access. Use the Windows service for real Tunnel verification.
+The tests cover the public Pages build, gateway CORS and streaming, socket separation, proxy header spoofing, read-only views, mutation restrictions, secret exclusion and backups. They also cover Live and Shadow separation, market and limit orders in Shadow, scheduled job recovery, SPY discovery, imports, historical rankings and attribution. Run `.\.venv\Scripts\python.exe scripts\stress-test.py` for a 330-request, 16-client load with isolated data, real sockets and one worker. It includes local and public performance queries, writes `data/verification-stress.json` and removes its temporary dataset. `scripts/qa-server.py` serves synthetic data on ports 18765 and 18766 for isolated browser checks.
 
 ## Verification status
 
-The local implementation is verified. Signed-in remote verification and full historical coverage require the remaining account configuration and data below. The latest local evidence snapshot is in ignored `data/verification-audit.json`.
+The latest local evidence snapshot is in ignored `data/verification-audit.json`. Live remote verification and full historical coverage require the configuration and data below.
 
 | Requirement | Current evidence and limits |
 | --- | --- |
@@ -134,9 +134,9 @@ The local implementation is verified. Signed-in remote verification and full his
 | News and Back Test | Intentional placeholders. News is local only; no invented stories or backtest results are displayed. |
 | Database, sources and data quality | Catalogs, import validation, source/freshness records, corporate actions, quarantine, exchange-calendar checks and adjustment comparisons are implemented. Observed SPY daily coverage has 27 rejected source rows/session gaps. Hourly coverage starts in December 2023 and has 16 missing expected starts within its observed range. These are flagged, not filled. Adjustments remain unverified. |
 | Settings and appearance | Connections, schedules, sessions/providers, Shadow reset, storage/backups and access settings are local. Light mode is the default. The browser saves theme and per-period Top N choices. |
-| Shared dashboard | The optional loopback viewer validates JWTs and rejects local modules and mutations. The Worker proxies read-only views and live SSE through a fixed VPC Service and shows an offline page when it cannot reach Windows. Gateway integration tests use signed test JWTs and real sockets. A real sign-in and MFA challenge require the Worker and Access application in your Cloudflare account. |
+| Shared dashboard | The optional loopback viewer rejects local modules and mutations. The Worker forwards read-only views and live SSE through a fixed VPC Service. The static Pages dashboard shows an offline screen when it cannot reach Windows. Gateway integration tests use real sockets and synthetic data. |
 | Startup, backups and recovery | The scheduled task runs the local service. Interrupted jobs recover under the worker lock. A post-upgrade backup restored with SQLite integrity `ok`, all 36 referenced Parquet files, queue-progress columns and no embedded credentials. The upgrade preserved existing cash, positions and request history. |
 | Disconnected and expired-session feedback | HTML responses, sign-in redirects and incomplete JSON responses are rejected as unavailable data. Overview hides account metrics until its data is available; missing positions are not presented as zero holdings. Regression tests cover response decoding and render the real React Overview without data to reject invented zero counts. |
 | Tests, load and cleanup | Run the Python and JavaScript suites, production build, and 330-request load test on Windows. The load check exercises the local and viewing listeners with 16 clients and verifies one worker, WAL and SQLite integrity. It removes its temporary dataset. |
 
-Remote verification needs the Worker, Tunnel VPC Service, Access policy with MFA, and matching local team URL and audience. Complete stock rankings and attribution need point-in-time SPY constituents and adjusted constituent prices for the requested dates. Older intraday history requires a suitably licensed dataset.
+Remote verification needs the deployed Worker and its Tunnel VPC Service. Complete stock rankings and attribution need point-in-time SPY constituents and adjusted constituent prices for the requested dates. Older intraday history requires a suitably licensed dataset.

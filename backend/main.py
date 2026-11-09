@@ -146,7 +146,7 @@ def create_app(settings: Settings | None = None, adapter=None):
                 "connection": {"tradier_configured": bool(settings.production_api_key), "auth_mode": settings.auth_mode,
                                "access_configured": access_guard.jwks is not None,
                                "remote_port": settings.remote_port,
-                               "share_position_details": settings.share_position_details,
+                               "share_position_details": settings.auth_mode == "cloudflare" and settings.share_position_details,
                                "live_orders_enabled": False}}
 
     @app.get("/api/events")
@@ -520,7 +520,7 @@ def create_app(settings: Settings | None = None, adapter=None):
         raw = state(request)
         return {"access_scope": "remote", "settings": {k: raw["settings"].get(k) for k in ("appearance", "top_n")},
                 "sectors": raw["sectors"], "event_id": raw["event_id"],
-                "connection": {"auth_mode": "cloudflare", "live_orders_enabled": False}}
+                "connection": {"auth_mode": settings.auth_mode, "live_orders_enabled": False}}
 
     @app.get("/view/events", include_in_schema=False)
     async def view_events(request: Request):
@@ -530,7 +530,7 @@ def create_app(settings: Settings | None = None, adapter=None):
     def view_overview(mode: Literal["live", "shadow"] = "live"):
         raw = overview(mode)
         def shared_details(orders):
-            if not settings.share_position_details:
+            if settings.auth_mode != "cloudflare" or not settings.share_position_details:
                 return {}
             text_fields = {'symbol', 'side', 'status', 'create_date', 'order_type'}
             numeric_fields = {'created', 'quantity', 'price_cents', 'fill_price', 'avg_fill_price', 'price', 'limit_price'}

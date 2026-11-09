@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react';
+import { lazy, useMemo, useState } from 'react';
 import { ArrowDownLeft, ArrowUpRight, Clock3, RefreshCw, ShieldCheck } from 'lucide-react';
-import { api, money, pct, quotePrice, useApp, useResource, when } from '../api';
+import { api, money, pagesBuild, pct, quotePrice, useApp, useResource, when } from '../api';
 import { Empty, ErrorNote, SectionTitle, Tip } from '../ui';
-import ShadowReset from '../ShadowReset';
+const ShadowReset = import.meta.env.MODE === 'pages' ? null : lazy(() => import('../ShadowReset'));
 
 function Sparkline({ bars }: { bars: any[] }) {
   const points = useMemo(() => {
@@ -30,7 +30,7 @@ function PerformanceLine({ records }: { records: any[] }) {
 
 export default function Overview({ navigate }: { navigate: (page: string) => void }) {
   const { mode, state, refresh } = useApp();
-  const local = state?.access_scope === 'local';
+  const local = !pagesBuild && state?.access_scope === 'local';
   const live = mode === 'live';
   const { data, error } = useResource(`/overview?mode=${mode}`);
   const { data: portfolio, error: portfolioError } = useResource(local ? '/positions' : null);
@@ -59,7 +59,7 @@ export default function Overview({ navigate }: { navigate: (page: string) => voi
   const change = last && previous ? (last.close / previous.close - 1) * 100 : null;
   async function sync() { try { await api('/jobs/account/run',{method:'POST'}); setMessage('Account synchronization queued.'); refresh(); } catch(e:any) { setMessage(e.message); } }
   return <>
-    <div className="page-heading"><div><div className="page-kicker"><span className="kicker-line"/> YOUR INVESTMENT WORKSPACE</div><h1>Portfolio overview<span className="heading-period">.</span></h1><p className="page-subtitle">{live ? 'Tradier account' : 'Shadow cash account'} balances and performance.</p></div><div className="heading-actions">{local ? live ? <button className="button secondary" onClick={sync}><RefreshCw size={15}/> Sync account</button> : <ShadowReset/> : <span className="soft-badge">READ ONLY</span>}</div></div>
+    <div className="page-heading"><div><div className="page-kicker"><span className="kicker-line"/> YOUR INVESTMENT WORKSPACE</div><h1>Portfolio overview<span className="heading-period">.</span></h1><p className="page-subtitle">{live ? 'Tradier account' : 'Shadow cash account'} balances and performance.</p></div><div className="heading-actions">{local ? live ? <button className="button secondary" onClick={sync}><RefreshCw size={15}/> Sync account</button> : ShadowReset && <ShadowReset/> : <span className="soft-badge">READ ONLY</span>}</div></div>
     <ErrorNote text={error}/>{message && <div className="notice" role="status">{message}<button aria-label="Dismiss" onClick={() => setMessage('')}>×</button></div>}
     <div className="overview-grid">
       <section className="panel portfolio-panel"><div className="panel-top"><div><div className="eyebrow">{live ? 'LIVE ACCOUNT' : 'SHADOW ACCOUNT'} <Tip text={live ? 'Balances and positions read from Tradier. All trading decisions are made locally or in Tradier.' : 'A separate $10,000 simulated cash account. Entries and exits are managed in Investing.'}/></div><div className="portfolio-value">{money(summary.equity)}</div><p className="muted small">{live ? `${summary.account_count ?? 0} connected account${summary.account_count === 1 ? '' : 's'}` : 'Estimated value using cached market quotes'}</p></div><span className="account-badge"><span className="status-dot"/> {live ? 'LIVE' : 'SIMULATED'}</span></div><div className="portfolio-metrics"><div><span>{live ? 'Cash' : 'Settled cash'}</span><strong>{money(live ? summary.cash : summary.settled_cash)}</strong></div><div><span>Open positions</span><strong>{summary.open_positions ?? (positionsReady ? positions.length : '—')}</strong></div><div><span>{live ? 'Equity change' : 'Growth since reset'} <Tip text={live ? 'Change from the first retained daily equity snapshot. Deposits and withdrawals affect this number; it is not a cash-flow-adjusted investment return.' : 'Change from starting Shadow cash, including realized and unrealized simulated gains. Missing marks make equity unavailable.'}/></span><strong className={growth == null ? 'muted' : growth >= 0 ? 'positive' : 'negative'}>{pct(growth)}</strong></div></div>{!live && <p className="panel-caption">Unsettled sale proceeds {money(summary.unsettled_cash)} · Realized P/L {money(summary.realized)}</p>}</section>

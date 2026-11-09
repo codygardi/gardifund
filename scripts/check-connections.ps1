@@ -3,7 +3,7 @@ param([uri]$RemoteUrl)
 $ErrorActionPreference = 'Stop'
 
 if ($RemoteUrl -and ($RemoteUrl.Scheme -ne 'https' -or $RemoteUrl.UserInfo -or $RemoteUrl.Query -or $RemoteUrl.Fragment -or $RemoteUrl.AbsolutePath -ne '/')) {
-    throw 'Use the HTTPS root of the Worker protected by Cloudflare Access.'
+    throw 'Use the HTTPS root of the Worker.'
 }
 
 Add-Type -AssemblyName System.Net.Http
@@ -18,7 +18,7 @@ function Get-Endpoint([string]$Url, [switch]$ReadJson) {
     try {
         $response = $client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
     } catch {
-        return @{ Status = 'unreachable'; MediaType = ''; Data = $null; Location = $null }
+        return @{ Status = 'unreachable'; MediaType = ''; Data = $null; Location = $null; PagesOrigin = '' }
     }
     try {
         $mediaType = $response.Content.Headers.ContentType.MediaType
@@ -30,7 +30,8 @@ function Get-Endpoint([string]$Url, [switch]$ReadJson) {
                 $data = $null
             }
         }
-        return @{ Status = [int]$response.StatusCode; MediaType = $mediaType; Data = $data; Location = $response.Headers.Location }
+        $pagesOrigin = if ($response.Headers.Contains('Access-Control-Allow-Origin')) { $response.Headers.GetValues('Access-Control-Allow-Origin') -join ',' } else { '' }
+        return @{ Status = [int]$response.StatusCode; MediaType = $mediaType; Data = $data; Location = $response.Headers.Location; PagesOrigin = $pagesOrigin }
     } finally {
         $response.Dispose()
     }
@@ -57,8 +58,38 @@ try {
     Write-Host 'Local connection checks passed.'
 
     $connection = $state.Data.connection
+    if ($connection.auth_mode -eq 'public') {
+        $viewerBase = 'http://127.0.0.1:' + $connection.remote_port
+        $view = Get-Endpoint ($viewerBase + '/view/state') -ReadJson
+        $denied = Get-Endpoint ($viewerBase + '/api/state')
+        Write-Host ('Public viewing listener: ' + $view.Status)
+        if ($view.Status -ne 200 -or $view.Data.access_scope -ne 'remote' -or $denied.Status -ne 403) {
+            Write-Host 'VIEWING LISTENER NOT READY. Check the local viewing port and restart GARDiFUND.'
+            exit 1
+        }
+        if ($RemoteUrl) {
+            $edge = Get-Endpoint ([uri]::new($RemoteUrl, '/view/state').AbsoluteUri) -ReadJson
+            Write-Host ('Public Worker state: ' + $edge.Status)
+            if (Test-AnonymousDenial $edge) {
+                Write-Host 'The public Worker still requires access or denied the request. Check the gateway deployment and Access for this Worker.'
+                exit 1
+            }
+            if ($edge.Status -ne 200 -or $edge.Data.access_scope -ne 'remote' -or
+                $edge.Data.connection.auth_mode -ne 'public' -or $edge.PagesOrigin -ne 'https://codygardi.github.io') {
+                Write-Host 'WAN VIEW UNAVAILABLE. Check the Worker deployment and its Tunnel VPC Service.'
+                exit 1
+            }
+            $edgeDenied = Get-Endpoint ([uri]::new($RemoteUrl, '/api/state').AbsoluteUri)
+            if ($edgeDenied.Status -ne 403) {
+                Write-Host 'The Worker must deny local API routes.'
+                exit 1
+            }
+            Write-Host 'The public read-only Worker is reachable from GitHub Pages.'
+        }
+        exit 0
+    }
     if ($connection.auth_mode -ne 'cloudflare' -or -not $connection.access_configured) {
-        Write-Host 'Read-only sharing awaits the Worker Access team URL and audience in the local environment.'
+        Write-Host 'Set GARDIFUND_AUTH_MODE=public in the local environment to enable the Pages viewer.'
         if ($RemoteUrl) { exit 1 }
         exit 0
     }

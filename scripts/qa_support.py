@@ -7,15 +7,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from cryptography.hazmat.primitives.asymmetric import rsa
-import jwt
 from backend.config import Settings
 from backend.db import SECTORS
 from backend.main import create_app
 from backend.market import nyse_session_hours
 from backend.services import store_holdings, sync_accounts
 from backend.setup_lock import hash_password
-import backend.security
 
 
 class SyntheticBroker:
@@ -36,17 +33,9 @@ class SyntheticBroker:
 
 
 def fixture(data_dir, local_port, remote_port, start_worker=False, auto_access=False):
-    private = rsa.generate_private_key(public_exponent=65537,key_size=2048)
-    class LocalKeys:
-        def __init__(self,*args,**kwargs): pass
-        def get_signing_key_from_jwt(self,token):
-            from types import SimpleNamespace
-            return SimpleNamespace(key=private.public_key())
-    backend.security.PyJWKClient = LocalKeys
-    settings = Settings(_env_file=None,GARDIFUND_DATA_DIR=data_dir,GARDIFUND_AUTH_MODE='cloudflare',
+    settings = Settings(_env_file=None,GARDIFUND_DATA_DIR=data_dir,GARDIFUND_AUTH_MODE='public',
                         GARDIFUND_LOCAL_PORT=local_port,GARDIFUND_REMOTE_PORT=remote_port,GARDIFUND_START_WORKER=start_worker,
-                        PRODUCTION_API_KEY='',SETUPS_PASSWORD_HASH=hash_password('qa-only-password'),
-                        CF_ACCESS_TEAM_DOMAIN='https://qa.cloudflareaccess.com',CF_ACCESS_AUD='qa-audience')
+                        PRODUCTION_API_KEY='',SETUPS_PASSWORD_HASH=hash_password('qa-only-password'))
     broker = SyntheticBroker()
     app = create_app(settings,adapter=broker)
     app.state.worker.execution.clock = lambda: broker.now
@@ -66,19 +55,15 @@ def fixture(data_dir, local_port, remote_port, start_worker=False, auto_access=F
         conn.execute('UPDATE jobs SET enabled=0')
         if start_worker:
             conn.execute("UPDATE jobs SET enabled=1,next_run=?,interval_seconds=2 WHERE name IN ('portfolio','account','discovery')",(time.time(),))
-    token = jwt.encode({'iss':'https://qa.cloudflareaccess.com','aud':'qa-audience','exp':int(time.time())+3600},private,algorithm='RS256')
     if auto_access:
         cookie = app.state.setup_lock.unlock('qa-only-password')
         class FixtureAccess:
             def __init__(self,app): self.app=app
             async def __call__(self,scope,receive,send):
-                if scope['type'] == 'http':
+                if scope['type'] == 'http' and scope.get('server',(None,None))[1] == local_port:
                     headers = list(scope.get('headers',[]))
-                    if scope.get('server',(None,None))[1] == remote_port:
-                        headers.append((b'cf-access-jwt-assertion',token.encode()))
-                    else:
-                        headers.append((b'cookie',f'gardifund_live_setup={cookie}'.encode()))
+                    headers.append((b'cookie',f'gardifund_live_setup={cookie}'.encode()))
                     scope = {**scope,'headers':headers}
                 await self.app(scope,receive,send)
         app.add_middleware(FixtureAccess)
-    return app, token
+    return app

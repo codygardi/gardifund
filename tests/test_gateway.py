@@ -7,10 +7,6 @@ import socket
 import subprocess
 import threading
 import time
-from types import SimpleNamespace
-
-from cryptography.hazmat.primitives.asymmetric import rsa
-import jwt
 import uvicorn
 
 from backend.config import Settings
@@ -18,18 +14,9 @@ from backend.main import create_app
 from backend.services import sync_accounts
 
 
-def test_javascript_gateway_authenticates_real_backend_and_forwards_live_sse(tmp_path, monkeypatch):
+def test_public_gateway_is_read_only_and_forwards_live_sse(tmp_path):
     node = shutil.which('node')
     assert node, 'Node.js is required for the cross-runtime gateway integration test'
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-    class Keys:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def get_signing_key_from_jwt(self, token):
-            return SimpleNamespace(key=key.public_key())
-
     class Broker:
         def accounts(self):
             return [{'account_id': 'SYNTHETIC-PRIVATE-ID',
@@ -38,17 +25,14 @@ def test_javascript_gateway_authenticates_real_backend_and_forwards_live_sse(tmp
                                     'account_number': 'SYNTHETIC-PRIVATE-ID', 'note': 'SYNTHETIC-PRIVATE-NOTE'}],
                      'orders': []}]
 
-    monkeypatch.setattr('backend.security.PyJWKClient', Keys)
     sockets = [socket.create_server(('127.0.0.1', 0)) for _ in range(2)]
     for sock in sockets:
         sock.setblocking(False)
     local_port, remote_port = [sock.getsockname()[1] for sock in sockets]
     settings = Settings(_env_file=None, GARDIFUND_DATA_DIR=tmp_path,
-                        GARDIFUND_AUTH_MODE='cloudflare', GARDIFUND_START_WORKER=False,
+                        GARDIFUND_AUTH_MODE='public', GARDIFUND_START_WORKER=False,
                         GARDIFUND_LOCAL_PORT=local_port, GARDIFUND_REMOTE_PORT=remote_port,
-                        PRODUCTION_API_KEY='', SETUPS_PASSWORD_HASH='',
-                        CF_ACCESS_TEAM_DOMAIN='https://gateway-test.cloudflareaccess.com',
-                        CF_ACCESS_AUD='gateway-test-audience')
+                        PRODUCTION_API_KEY='', SETUPS_PASSWORD_HASH='', GARDIFUND_SHARE_POSITION_DETAILS=True)
     app = create_app(settings, adapter=Broker())
     sync_accounts(app.state.db, Broker())
     first_bar = {'time': '2024-01-02', 'open': 100, 'high': 104, 'low': 99, 'close': 101, 'volume': 1000}
@@ -93,18 +77,13 @@ def test_javascript_gateway_authenticates_real_backend_and_forwards_live_sse(tmp
             time.sleep(.02)
         assert server.started
         update_thread.start()
-        claims = {'iss': 'https://gateway-test.cloudflareaccess.com',
-                  'aud': 'gateway-test-audience', 'exp': int(time.time()) + 120}
         env = {**os.environ, 'QA_LOCAL_ORIGIN': f'http://127.0.0.1:{local_port}',
-               'QA_REMOTE_ORIGIN': f'http://127.0.0.1:{remote_port}', 'QA_EVENT_CURSOR': str(cursor),
-               'QA_ACCESS_JWT': jwt.encode(claims, key, algorithm='RS256'),
-               'QA_EXPIRED_JWT': jwt.encode({**claims, 'exp': int(time.time()) - 60}, key, algorithm='RS256'),
-               'QA_WRONG_AUDIENCE_JWT': jwt.encode({**claims, 'aud': 'wrong'}, key, algorithm='RS256')}
+               'QA_REMOTE_ORIGIN': f'http://127.0.0.1:{remote_port}', 'QA_EVENT_CURSOR': str(cursor)}
         result = subprocess.run([node, str(Path(__file__).with_name('gateway_roundtrip.mjs'))],
                                 env=env, capture_output=True, text=True, timeout=25)
         assert result.returncode == 0, result.stdout + result.stderr
         report = json.loads(result.stdout)
-        assert report['authenticated_gateway_roundtrip'] and report['overview_sse_update'] and report['charts_sse_update']
+        assert report['public_gateway_roundtrip'] and report['overview_sse_update'] and report['charts_sse_update']
         update_thread.join(timeout=2)
         assert not update_thread.is_alive() and not update_errors
     finally:

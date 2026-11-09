@@ -10,6 +10,9 @@ from jwt import PyJWKClient
 
 from .config import Settings
 
+VIEW_PATHS = {"/view/state", "/view/overview", "/view/events", "/view/bars",
+              "/view/sectors", "/view/attribution", "/view/chart-performance"}
+
 
 class AccessGuard:
     def __init__(self, settings: Settings):
@@ -54,12 +57,16 @@ class AccessGuard:
                 loopback = False
             if host not in {"localhost", "127.0.0.1", "::1"} or not loopback:
                 return 403, "Local mode is restricted to loopback hosts and clients."
-            proxy_headers = {"cf-connecting-ip", "cf-ray", "cf-access-jwt-assertion", "forwarded",
+            proxy_headers = {"cf-connecting-ip", "cf-ray", "cf-access-jwt-assertion", "forwarded", "x-gardifund-viewer",
                              "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto"}
             if proxy_headers.intersection(request.headers.keys()):
                 return 403, "The local control listener does not accept proxied requests."
-        elif (server and tuple(server) == self.settings.viewing_address
-              and self.settings.auth_mode == "cloudflare"):
+        elif server and tuple(server) == self.settings.viewing_address and self.settings.auth_mode == "public":
+            request.state.access_scope = "remote"
+            request.state.access_expires = None
+            if request.method not in {"GET", "HEAD"} or request.url.path not in VIEW_PATHS:
+                return 403, "The public listener exposes read-only views only."
+        elif server and tuple(server) == self.settings.viewing_address and self.settings.auth_mode == "cloudflare":
             request.state.access_scope = "remote"
             if not self.jwks:
                 return 503, "Cloudflare Access is not configured."
@@ -73,10 +80,8 @@ class AccessGuard:
                     self.validate_token, token, limiter=self.jwt_limiter)
             except Exception:
                 return 401, "Invalid or expired Cloudflare Access token."
-            allowed_views = {"/view/state", "/view/overview", "/view/events", "/view/bars",
-                             "/view/sectors", "/view/attribution", "/view/chart-performance"}
             path = request.url.path
-            if request.method not in {"GET", "HEAD"} or not (path in allowed_views or path in {"/", "/scope"} or path.startswith("/assets/")):
+            if request.method not in {"GET", "HEAD"} or not (path in VIEW_PATHS or path in {"/", "/scope"} or path.startswith("/assets/")):
                 return 403, "The remote listener exposes read-only views only."
             if path.startswith(('/assets/Investing-', '/assets/Data-', '/assets/Settings-')):
                 return 403, 'This module is available locally only.'

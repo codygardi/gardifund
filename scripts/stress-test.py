@@ -1,4 +1,4 @@
-"""Bounded HTTP load against disposable synthetic data and signed test Access JWTs."""
+"""Bounded HTTP load against disposable synthetic data and public viewing routes."""
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
@@ -21,7 +21,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='qa-stress-',dir=ROOT/'data') as directory:
         sockets=[socket.create_server(('127.0.0.1',0)) for _ in range(2)]
         ports=[sock.getsockname()[1] for sock in sockets]
-        app,token=fixture(Path(directory),*ports,start_worker=True)
+        app=fixture(Path(directory),*ports,start_worker=True)
         server=uvicorn.Server(uvicorn.Config(app,proxy_headers=False,access_log=False,log_level='error'))
         thread=threading.Thread(target=lambda:server.run(sockets=sockets),daemon=True)
         thread.start()
@@ -35,19 +35,19 @@ def main():
             market_rank = '/api/chart-performance?mode=market&year=2026&month=1&top_n=1'
             sector_rank = '/view/chart-performance?mode=sectors&year=2026&month=1&top_n=5'
             rank_counts = {market_rank: 1, sector_rank: 5}
-            cases=[(local,'GET','/api/state',200,False),(local,'GET','/api/overview?mode=shadow',200,False),
-                   (local,'GET','/api/discovery',200,False),(local,'GET','/api/positions',200,False),
-                   (local,'GET','/api/bars?symbol=SPY&interval=1d',200,False),
-                   (remote,'GET','/view/overview?mode=live',200,True),(remote,'GET','/view/bars?symbol=SPY',200,True),
-                   (local,'GET',market_rank,200,False),(remote,'GET',sector_rank,200,True),
-                   (remote,'GET','/api/state',403,True),(remote,'GET','/view/database',403,True),
-                   (remote,'POST','/api/shadow/reset',403,True),(remote,'GET','/view/state',401,False)]
+            cases=[(local,'GET','/api/state',200),(local,'GET','/api/overview?mode=shadow',200),
+                   (local,'GET','/api/discovery',200),(local,'GET','/api/positions',200),
+                   (local,'GET','/api/bars?symbol=SPY&interval=1d',200),
+                   (remote,'GET','/view/overview?mode=live',200),(remote,'GET','/view/bars?symbol=SPY',200),
+                   (local,'GET',market_rank,200),(remote,'GET',sector_rank,200),
+                   (remote,'GET','/api/state',403),(remote,'GET','/view/database',403),
+                   (remote,'POST','/api/shadow/reset',403),(remote,'GET','/view/state',200)]
             with httpx.Client(timeout=20,limits=httpx.Limits(max_connections=16)) as client:
                 def request(index):
-                    base,method,path,expected,authorized=cases[index%len(cases)]
+                    base,method,path,expected=cases[index%len(cases)]
                     before=time.perf_counter()
                     try:
-                        response=client.request(method,base+path,headers={'Cf-Access-Jwt-Assertion':token} if authorized else {})
+                        response=client.request(method,base+path)
                         okay = response.status_code == expected
                         if okay and path in rank_counts:
                             ranked = response.json()

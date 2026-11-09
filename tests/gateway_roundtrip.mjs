@@ -2,8 +2,8 @@
 import assert from 'node:assert/strict';
 import gateway from '../deploy/worker/worker.js';
 
-const { QA_REMOTE_ORIGIN, QA_LOCAL_ORIGIN, QA_ACCESS_JWT, QA_EXPIRED_JWT, QA_WRONG_AUDIENCE_JWT, QA_EVENT_CURSOR } = process.env;
-assert.ok(QA_REMOTE_ORIGIN && QA_LOCAL_ORIGIN && QA_ACCESS_JWT);
+const { QA_REMOTE_ORIGIN, QA_LOCAL_ORIGIN, QA_EVENT_CURSOR } = process.env;
+assert.ok(QA_REMOTE_ORIGIN && QA_LOCAL_ORIGIN);
 let calls = 0;
 function binding(destination) {
   return { GARDIFUND_ORIGIN: { fetch(input) {
@@ -16,15 +16,16 @@ function binding(destination) {
   } } };
 }
 const remote = binding(QA_REMOTE_ORIGIN);
-function view(path, token = QA_ACCESS_JWT, method = 'GET', env = remote) {
+function view(path, method = 'GET', env = remote) {
   return gateway.fetch(new Request('https://synthetic.workers.dev' + path, {
     method, signal: AbortSignal.timeout(12000),
-    headers: { 'Cf-Access-Jwt-Assertion': token, Cookie: 'local-private-cookie=never-forward', Authorization: 'Bearer never-forward' },
+    headers: { Origin: 'https://codygardi.github.io' },
   }), env);
 }
 
-const scope = await view('/scope');
+const scope = await view('/view/state');
 assert.equal(scope.status, 200);
+assert.equal(scope.headers.get('Access-Control-Allow-Origin'), 'https://codygardi.github.io');
 assert.equal((await scope.json()).access_scope, 'remote');
 const overview = await view('/view/overview?mode=live');
 assert.equal(overview.status, 200);
@@ -42,22 +43,20 @@ const firstBars = await market.text();
 assert.equal(JSON.parse(firstBars).bars.at(-1).close, 101);
 assert.doesNotMatch(firstBars, /SYNTHETIC-PRIVATE-SOURCE/);
 
-const parts = QA_ACCESS_JWT.split('.');
-parts[2] = (parts[2][0] === 'a' ? 'b' : 'a') + parts[2].slice(1);
-for (const token of [parts.join('.'), QA_EXPIRED_JWT, QA_WRONG_AUDIENCE_JWT]) {
-  const response = await view('/view/overview?mode=live', token);
-  assert.equal(response.status, 401, 'The actual backend must reject an invalid signed token');
-  await response.body?.cancel();
-}
 // Even a wrongly configured VPC destination must not turn this gateway into a control API.
-const wrongDestination = await view('/scope', QA_ACCESS_JWT, 'GET', binding(QA_LOCAL_ORIGIN));
+const wrongDestination = await view('/view/state', 'GET', binding(QA_LOCAL_ORIGIN));
 assert.equal(wrongDestination.status, 403);
 await wrongDestination.body?.cancel();
 const beforeDenials = calls;
 for (const [method, path] of [['GET', '/api/state'], ['POST', '/api/shadow/reset'], ['GET', '/view/database']]) {
-  assert.equal((await view(path, QA_ACCESS_JWT, method)).status, 403);
+  assert.equal((await view(path, method)).status, 403);
 }
 assert.equal(calls, beforeDenials, 'Forbidden requests must not reach the Windows server');
+for (const path of ['/', '/assets/Settings-private.js', '/api/state', '/view/database']) {
+  const response = await fetch(QA_REMOTE_ORIGIN + path);
+  assert.equal(response.status, 403, 'The public listener must also reject non-view routes');
+  await response.body?.cancel();
+}
 
 const stream = await view('/view/events?after=' + QA_EVENT_CURSOR);
 assert.equal(stream.status, 200);
@@ -92,4 +91,4 @@ assert.equal(ranking.status, 200);
 const rankingData = await ranking.json();
 assert.equal(rankingData.rows[0].symbol, 'SPY');
 assert.equal(rankingData.series[0].bars.at(-1).close, 103);
-console.log(JSON.stringify({ authenticated_gateway_roundtrip: true, invalid_tokens_rejected: 3, overview_sse_update: true, charts_sse_update: true, local_controls_denied: true }));
+console.log(JSON.stringify({ public_gateway_roundtrip: true, overview_sse_update: true, charts_sse_update: true, local_controls_denied: true }));
