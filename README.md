@@ -36,7 +36,7 @@ Run the following once in your own Windows account (Cloudflare can be configured
 .\scripts\register-startup.ps1
 ```
 
-This registers a Task Scheduler task named `GARDiFUND` for the current user's sign-in with restart-on-failure. It reads the access mode from `.env` and refuses to replace a task with the same name. The launcher uses a Windows process job so stopping the task also terminates its Python worker descendants. Manage or remove it in Task Scheduler. For remote sharing, run `cloudflared` separately as a Windows service. [Windows connector instructions](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/as-a-service/windows/)
+This registers a Task Scheduler task named `GARDiFUND` for the current user's sign-in with restart-on-failure. It reads the access mode from `.env` and refuses to replace a task with the same name. The launcher uses a Windows process job so stopping the task also terminates its worker processes. For remote sharing, the task starts `cloudflared` when the private Tunnel token file is present. Manage the task in Task Scheduler. [Public dashboard setup](deploy/github-pages.md)
 
 ## Public dashboard
 

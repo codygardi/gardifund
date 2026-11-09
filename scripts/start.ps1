@@ -18,6 +18,26 @@ $env:GARDIFUND_REMOTE_PORT = "$RemotePort"
 if ($LocalDev) {
     $env:GARDIFUND_AUTH_MODE = 'local'
 }
+
+$TunnelTokenFile = Join-Path $ProjectRoot '.tools\viewer-tunnel.token'
+if (-not $LocalDev -and $RemotePort -eq 8766 -and (Test-Path -LiteralPath $TunnelTokenFile -PathType Leaf)) {
+    $Connector = Join-Path $ProjectRoot '.tools\cloudflared.exe'
+    if (-not (Test-Path -LiteralPath $Connector -PathType Leaf)) {
+        $Connector = Get-Command cloudflared.exe -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty Source
+    }
+    if ($Connector) {
+        try {
+            $TunnelArguments = 'tunnel --no-autoupdate --protocol quic run --token-file "{0}"' -f $TunnelTokenFile
+            Start-Process -FilePath $Connector -ArgumentList $TunnelArguments -WindowStyle Hidden
+        } catch {
+            Write-Warning 'The public viewer connector could not start. Check the Cloudflare Tunnel setup.'
+        }
+    } else {
+        Write-Warning 'The public viewer needs cloudflared. Run .\scripts\install-cloudflared.ps1.'
+    }
+}
+
 Write-Host "Local workspace: http://127.0.0.1:$Port/"
 & '.\.venv\Scripts\python.exe' -m backend.server
 exit $LASTEXITCODE

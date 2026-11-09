@@ -4,41 +4,26 @@ Visitors open [GARDiFUND](https://codygardi.github.io/gardifund/) in their brows
 
 The Windows app serves the full workspace on `127.0.0.1:8765` and public read-only views on `127.0.0.1:8766`. The Worker has a fixed private Tunnel connection to port 8766. Both the Worker and the viewing listener deny controls and writes. The Pages artifact contains static UI assets. It fetches the public projections and SSE updates at runtime.
 
-## 1. Connect the viewer
+After the one-time setup below, start the **GARDiFUND** task in Windows and open the [local workspace](http://127.0.0.1:8765/). Share the Pages link with viewers. The task also starts the connector if you stored the Tunnel token in `.tools/viewer-tunnel.token`.
 
-In the local `.env`, set `GARDIFUND_AUTH_MODE=public`. Start or restart the GARDiFUND task. In the [Workers VPC dashboard](https://dash.cloudflare.com/?to=/:account/workers/vpc), select **VPC Services > Create** and use these settings.
+## One-time setup on the Windows PC
 
-| Field | Value |
-| --- | --- |
-| Service name | `gardifund-view` |
-| Tunnel | The healthy Tunnel connected to this Windows PC |
-| Host or IP address | `127.0.0.1` |
-| Ports | Custom HTTP port `8766` |
-
-Copy the resulting **Service ID**. Use the dashboard's Windows connector instructions if the Tunnel needs to be connected. [Cloudflare VPC setup](https://developers.cloudflare.com/workers-vpc/get-started/)
-
-## 2. Deploy the existing Worker
-
-Run this in PowerShell from the workspace, and sign in to Cloudflare if Wrangler prompts.
+Set `GARDIFUND_AUTH_MODE=public` in the local `.env` and start the GARDiFUND task. Run this from the workspace in PowerShell.
 
 ```powershell
-$env:GARDIFUND_VPC_SERVICE_ID = Read-Host 'Paste the VPC Service ID'
-node .\scripts\build-worker-config.mjs
-if ($LASTEXITCODE -eq 0) {
-    npx.cmd wrangler deploy --config .\deploy\worker\wrangler.generated.json
-}
+.\scripts\enable-sharing.ps1
 ```
 
-The deploy command updates `gardifund` and binds `GARDIFUND_ORIGIN` to that service. In **Workers & Pages > gardifund > Access**, turn off the old production sign-in rule for this Worker after deploying the new gateway. Use the Worker-specific public option if an account-level rule applies. [Cloudflare Access controls](https://developers.cloudflare.com/workers/configuration/cloudflare-access/#disable-access)
+Approve Wrangler in the Cloudflare account that owns the `gardifund` Worker. Enter the one-time code shown in PowerShell when prompted. The script creates or reuses the dedicated Tunnel and VPC Service, deploys the Worker, and saves the connector token locally. Restart the GARDiFUND task once after setup. [Cloudflare VPC setup](https://developers.cloudflare.com/workers-vpc/get-started/)
 
-## 3. Open the dashboard
+## Open the dashboard
 
-The repository's Pages workflow publishes the dashboard with `GARDIFUND_DASHBOARD_URL` set to the HTTPS root of the Worker. The current value is `https://gardifund.codygardi22.workers.dev/`. Open the [public dashboard](https://codygardi.github.io/gardifund/) and check that Overview and Charts load. Use **Sync account** in the [local workspace](http://127.0.0.1:8765/) to verify the public view receives updates.
+Open the [public dashboard](https://codygardi.github.io/gardifund/) and check that Overview and Charts load. Visitors need only this link. Use **Sync account** in the [local workspace](http://127.0.0.1:8765/) to verify the public view receives updates.
 
 ```powershell
 .\scripts\check-connections.ps1 -RemoteUrl https://gardifund.codygardi22.workers.dev/
 ```
 
-The script checks that the public state endpoint returns JSON with the Pages origin permitted and that the Worker denies the local API. To check outage behavior, stop the app during a maintenance window, reload the public page, and start the task again to observe recovery.
+The check verifies that the Worker returns data to Pages and denies the local API. If it redirects to a sign-in page, disable the sign-in rule for this Worker under **Workers & Pages > gardifund > Access**. To check outage behavior, stop the app during a maintenance window, reload the public page, and start the task again to observe recovery. [Cloudflare Access controls](https://developers.cloudflare.com/workers/configuration/cloudflare-access/#disable-access)
 
 Workers VPC is free during its current beta. [Cloudflare VPC pricing](https://developers.cloudflare.com/workers-vpc/platform/pricing/)
