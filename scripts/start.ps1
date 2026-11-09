@@ -17,12 +17,7 @@ $env:GARDIFUND_LOCAL_PORT = "$Port"
 $env:GARDIFUND_REMOTE_PORT = "$RemotePort"
 if ($LocalDev) {
     $env:GARDIFUND_AUTH_MODE = 'local'
-    Write-Host "GARDiFUND local development: http://127.0.0.1:$Port/"
-    Write-Host 'Local mode is for this machine only; never route a Cloudflare Tunnel to local mode.'
-} else {
-    $env:GARDIFUND_AUTH_MODE = 'cloudflare'
-    Write-Host "Local control: http://127.0.0.1:$Port/"
-    Write-Host 'Private viewing uses the configured Windows IP on port 80 after Access setup.'
 }
+Write-Host "Local workspace: http://127.0.0.1:$Port/"
 & '.\.venv\Scripts\python.exe' -m backend.server
 exit $LASTEXITCODE

@@ -17,7 +17,7 @@ export default function SettingsPage() {
   async function backup() { try { const result = await api('/backups',{method:'POST'}); setMessage(`Backup created: ${result.name}`); refresh(); } catch(e:any) { setMessage(e.message); } }
   async function appearance(value:string) { try { await api('/settings',{method:'PATCH',body:JSON.stringify({appearance:value})}); setTheme(value as 'dark'|'light'); refresh(); } catch(e:any) { setMessage(e.message); } }
   if (state?.access_scope !== 'local') return null;
-  const privateViewIp = state.connection?.private_view_ip;
+  const sharingEnabled = state.connection?.auth_mode === 'cloudflare';
   return <>
     <div className="page-heading"><div><div className="page-kicker"><span className="kicker-line"/> MAKE IT YOURS</div><h1>Settings<span className="heading-period">.</span></h1><p className="page-subtitle">The connections and controls behind your workspace.</p></div></div>
     {message && <div className="notice" role="status">{message}<button aria-label="Dismiss" onClick={() => setMessage('')}>×</button></div>}
@@ -33,18 +33,18 @@ export default function SettingsPage() {
         </div>
         <div className="setting-row">
           <div>
-            <strong>Private viewer</strong>
-            <small>{privateViewIp ? 'http://' + privateViewIp + '/' : 'Set the private IP in the local .env'}</small>
+            <strong>Read-only dashboard</strong>
+            <small>{sharingEnabled ? `Loopback viewer on port ${state.connection.remote_port}` : 'Enable the Worker connection in the local .env'}</small>
           </div>
           <span className="soft-badge">
-            {!privateViewIp ? 'LOCAL ONLY' : state.connection.access_configured ? 'JWT CONFIGURED' : 'ACCESS SETUP PENDING'}
+              {!sharingEnabled ? 'LOCAL ONLY' : state.connection.access_configured ? 'JWT CONFIGURED' : 'ACCESS SETUP PENDING'}
           </span>
         </div>
         <div className="setting-row">
           <div><strong>Live order submission</strong><small>Open or close real positions in Tradier</small></div>
           <span className="connection-pill">DISABLED</span>
         </div>
-        <p className="panel-caption">Viewers connect through Cloudflare One Client and sign in with Access MFA. Add the Access team URL and audience in the local .env.</p>
+        <p className="panel-caption">The GitHub Pages link opens the Access-protected dashboard. Overview shares {state.connection?.share_position_details ? 'position and order details with approved viewers' : 'aggregate metrics'}.</p>
       </section>
       <section className="panel settings-panel appearance-panel"><div className="settings-heading"><div className="settings-icon"><Laptop size={18}/></div><div><h2>Appearance</h2><p>Choose your workspace theme.</p></div></div><div className="theme-options"><button onClick={() => appearance('dark')} className={theme === 'dark' ? 'theme-choice selected' : 'theme-choice'}><Moon size={17}/> Dark {theme === 'dark' && <Check size={15}/>}</button><button onClick={() => appearance('light')} className={theme === 'light' ? 'theme-choice selected' : 'theme-choice'}><Sun size={17}/> Light {theme === 'light' && <Check size={15}/>}</button></div></section>
     </div>

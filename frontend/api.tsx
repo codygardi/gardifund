@@ -43,28 +43,52 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     let source: EventSource | undefined;
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let retryDelay = 3000;
+    function reconnect() {
+      if (!active) return;
+      retry = setTimeout(connect, retryDelay);
+      retryDelay = Math.min(retryDelay * 2, 30000);
+    }
     // Re-read the current state after reconnecting so an event missed during a
     // disconnection cannot leave a temporary discovery snapshot stale.
-    accessScope().then(value => {
-      if (!active) return;
-      source = new EventSource(`${value === 'local' ? '/api' : '/view'}/events`);
-      source.onopen = () => { setConnected(true); refresh(); };
-      source.onerror = () => setConnected(false);
-      source.onmessage = message => {
-      try {
-        const event = JSON.parse(message.data);
-        if (event.module === 'refresh') refresh();
-        else if (typeof event.module === 'string') setResourceVersions(current => ({...current,[event.module]:(current[event.module] || 0)+1}));
-        if (event.module === 'charts' && event.action === 'market_updated' && typeof event.payload?.symbol === 'string' && typeof event.payload?.interval === 'string') {
-          const key = `${event.payload.symbol}:${event.payload.interval}`;
-          setMarketVersions(current => ({ ...current, [key]: (current[key] || 0) + 1 }));
-        }
-      } catch { /* A malformed event must not prevent the normal refresh. */ }
+    function connect() {
+      accessScope().then(value => {
+        if (!active) return;
+        const stream = new EventSource(`${value === 'local' ? '/api' : '/view'}/events`);
+        source = stream;
+        stream.onopen = () => { retryDelay = 3000; setConnected(true); refresh(); };
+        stream.onerror = () => {
+          setConnected(false);
+          // A non-200 response closes EventSource instead of retrying on its own.
+          if (stream.readyState === EventSource.CLOSED) reconnect();
+        };
+        stream.onmessage = message => {
+          try {
+            const event = JSON.parse(message.data);
+            if (event.module === 'refresh') refresh();
+            else if (typeof event.module === 'string') setResourceVersions(current => ({...current,[event.module]:(current[event.module] || 0)+1}));
+            if (event.module === 'charts' && event.action === 'market_updated' && typeof event.payload?.symbol === 'string' && typeof event.payload?.interval === 'string') {
+              const key = `${event.payload.symbol}:${event.payload.interval}`;
+              setMarketVersions(current => ({ ...current, [key]: (current[key] || 0) + 1 }));
+            }
+          } catch { /* A malformed event must not prevent the normal refresh. */ }
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => setStateRevision(value => value + 1), 200);
+        };
+      }).catch(() => {
+        if (!active) return;
+        setConnected(false);
+        reconnect();
+      });
+    }
+    connect();
+    return () => {
+      active = false;
+      source?.close();
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => setStateRevision(value => value + 1), 200);
-      };
-    }).catch(() => setConnected(false));
-    return () => { active = false; source?.close(); if (timer) clearTimeout(timer); };
+      if (retry) clearTimeout(retry);
+    };
   }, [refresh]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;

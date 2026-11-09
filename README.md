@@ -2,7 +2,7 @@
 
 A single-user Windows investment workspace. FastAPI serves the compiled React application and control API on `127.0.0.1`. One worker in the same process runs persisted jobs even when the browser is closed. SQLite uses WAL for account, settings, schedules, metadata and events. Market bars are stored in Parquet and queried with DuckDB. The backend adapter reads Tradier data. **Live order submission is disabled.**
 
-Viewers on enrolled devices can open a read-only workspace over your private Cloudflare Tunnel. The Windows app supplies cached portfolio and chart data while it runs. [Private Tunnel setup](deploy/private-cloudflare.md)
+The public GitHub Pages entry point opens a read-only dashboard protected by Cloudflare Access. The Windows app supplies cached portfolio and chart data while it runs. [GitHub Pages and Worker setup](deploy/github-pages.md)
 
 ## Install and run
 
@@ -14,17 +14,17 @@ Requirements: Windows, Python 3.12, Node.js 20 or newer, and a Tradier productio
 
 The installer creates a virtual environment, installs the tested versions in `requirements.lock`, builds the UI, and creates `.env` only if it does not exist. Set `PRODUCTION_API_KEY` in `.env`. Run `.\.venv\Scripts\python.exe scripts\set-setup-password.py` to set the local Live screening password: the script stores a salted scrypt hash as `SETUPS_PASSWORD_HASH` and removes the old plaintext `SETUPS_PIN` setting. Restart after changing it. Credentials, password hashes, local account data, backups, and dependencies are excluded by `.gitignore`; credentials and password hashes are never serialized to the browser.
 
-For a **local-only development session**, run:
+To run the app in the foreground, use the startup script:
 
 ```powershell
-.\scripts\start.ps1 -LocalDev
+.\scripts\start.ps1
 ```
 
-Open `http://127.0.0.1:8765/`. The control listener accepts loopback clients and loopback hostnames and rejects common proxy headers. Stop a foreground session with Ctrl+C. Running `.\scripts\start.ps1` without `-LocalDev` enables Cloudflare viewing mode. In that mode, `GARDIFUND_PRIVATE_VIEW_IP` selects the private port 80 viewer once Access settings are present. With the private IP unset, the viewing listener binds to loopback on port 8766 for local verification. Both listeners belong to one process and one background worker. An OS lock protects the data directory from a second worker.
+Open `http://127.0.0.1:8765/`. The control listener accepts loopback clients and loopback hostnames and rejects common proxy headers. Stop a foreground session with Ctrl+C. The default is local-only. When `GARDIFUND_AUTH_MODE=cloudflare` is configured in `.env`, the same process also serves the read-only viewer on `127.0.0.1:8766`. Pass `-LocalDev` to force local-only mode for a foreground run. An OS lock protects the data directory from a second worker.
 
-The full seven-module workspace is available on this Windows PC. Other devices use Cloudflare One Client and the private viewing address to open Overview, Charts and Back Test.
+The full seven-module workspace is available on this Windows PC. Other devices open the Pages link and sign in to the shared Overview, Charts and Back Test dashboard.
 
-If the `GARDiFUND` scheduled task is already running, stop it with `Stop-ScheduledTask -TaskName GARDiFUND` before starting a separate session. Afterward, resume the background task with `Start-ScheduledTask -TaskName GARDiFUND`. The task provides local control and a Cloudflare listener that remains inaccessible without valid Access configuration.
+If the `GARDiFUND` scheduled task is already running, stop it with `Stop-ScheduledTask -TaskName GARDiFUND` before starting a separate session. Afterward, resume the background task with `Start-ScheduledTask -TaskName GARDiFUND`.
 
 The worker fetches dated SPY and sector ETF holdings, Tradier account data, SPY/sector daily bars, Yahoo SPY intraday bars, and discovery quotes. Hourly and 30-minute sector ETF history runs in staggered jobs; selecting missing sector comparisons in Charts brings those series forward in the queue. Each series is refreshed incrementally on its own persisted schedule. Jobs can be queued and their status viewed in Settings. Discovery defaults to every five minutes, editable in Settings, and starts only when Tradier's market clock reports `premarket` or `open`; a manually queued scan follows the same session rule. The clock is checked during longer scans; if the session ends, the incomplete scan is discarded. Account sync defaults to every 15 minutes. Discovery is prioritized when due, uses a start-to-start cadence, and skips missed slots if a provider is slow. The single worker checks for a due scan between individual holdings, account, and market-history provider requests; an already-running request can still delay the scan until it returns or times out. Settings and next-run times survive restart. An interrupted job is recovered when the worker reacquires its lock. The machine and application must remain running for scheduled jobs to execute, but the browser may be closed. Portfolio marks refresh on a separate 15-second persisted job during premarket and the regular session. This job also checks queued Shadow entries and working limit exits. The single worker yields to due Discovery and portfolio work between longer provider requests. UI updates stream through SSE; quote acquisition is polling, not a tick-by-tick exchange feed. A slow in-flight provider request can delay a refresh. Resource refreshes are scoped so portfolio updates do not reload stored chart history.
 
@@ -36,13 +36,13 @@ Run the following once in your own Windows account (Cloudflare can be configured
 .\scripts\register-startup.ps1
 ```
 
-This registers a Task Scheduler task named `GARDiFUND` for the current user's sign-in, in Cloudflare mode, with restart-on-failure. It refuses to replace a task with the same name. It is not a system boot service and does not run before sign-in. The launcher uses a Windows process job so stopping the task also terminates its Python worker descendants. Manage or remove it in Task Scheduler. Run `cloudflared` separately as a Windows service or another managed process; see Cloudflare's [Windows service instructions](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/as-a-service/windows/).
+This registers a Task Scheduler task named `GARDiFUND` for the current user's sign-in with restart-on-failure. It reads the access mode from `.env` and refuses to replace a task with the same name. The launcher uses a Windows process job so stopping the task also terminates its Python worker descendants. Manage or remove it in Task Scheduler. For remote sharing, run `cloudflared` separately as a Windows service. [Windows connector instructions](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/as-a-service/windows/)
 
 ## Cloudflare Tunnel, Access, and MFA
 
-Use the existing Windows Tunnel with one private `/32` route, an Access application for HTTP port 80, and Cloudflare One Client on the viewing devices. The setup uses a private address and an Access policy requiring MFA. Keep router port forwarding off. [Private Tunnel setup](deploy/private-cloudflare.md)
+Configure the Worker and an Access policy requiring MFA. Bind it to a Tunnel VPC Service scoped to the Windows viewer on port 8766. [Setup guide](deploy/github-pages.md)
 
-The private viewer accepts connections from the Tunnel connector on the same PC. It validates RS256 Access JWT signatures, issuer, audience and expiry for the UI, assets, views and SSE. `/healthz` returns basic readiness only. The viewer rejects `/api/*` and all mutations, including requests with valid JWTs. Overview shares a projection of Live and Shadow metrics, Charts reads stored market data, and Back Test is a placeholder. Account identifiers, raw broker payloads, private notes, archived ledgers and credentials stay local. SSE strips private event details and closes at token expiry or after one minute. The separate loopback control listener rejects proxied requests and checks the origin of mutations. [Cloudflare origin JWT validation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)
+The loopback viewer validates RS256 Access JWT signatures, issuer, audience and expiry for the UI, assets, views and SSE. The Worker and viewer reject `/api/*` and mutations, including requests with valid JWTs. Overview shares aggregate Live and Shadow metrics by default, Charts reads stored market data, and Back Test is a placeholder. Account identifiers, raw broker payloads, private notes, archived ledgers and credentials stay local. SSE strips private event details and closes at token expiry or after one minute. The control listener rejects proxied requests and checks the origin of mutations. [Cloudflare origin JWT validation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)
 
 ## Data behavior and limits
 
@@ -71,10 +71,10 @@ The local **Reset Shadow** button archives the current simulated ledger, cancels
 
 ```powershell
 .\scripts\check-connections.ps1
-.\scripts\check-connections.ps1 -RequirePrivateView
+.\scripts\check-connections.ps1 -RemoteUrl https://gardifund.YOUR-SUBDOMAIN.workers.dev/
 ```
 
-The local endpoints should return 200 and JSON. The configured private viewer must return 401 for an anonymous request. Use `-RequirePrivateView` to fail the check when the private IP or Access settings are missing. Finish verification from an enrolled device on another network by completing MFA and observing live updates in Overview and Charts. [Verification steps](deploy/private-cloudflare.md#4-verify-the-connection)
+The local endpoints should return 200 and JSON. The configured viewer must return 401 for an anonymous request. Finish verification from another network by completing MFA and observing live updates in Overview and Charts. The dashboard shows an offline screen when the Worker cannot reach the local service. [Verification steps](deploy/github-pages.md#link-and-verify)
 
 ## Import formats
 
@@ -134,9 +134,9 @@ The local implementation is verified. Signed-in remote verification and full his
 | News and Back Test | Intentional placeholders. News is local only; no invented stories or backtest results are displayed. |
 | Database, sources and data quality | Catalogs, import validation, source/freshness records, corporate actions, quarantine, exchange-calendar checks and adjustment comparisons are implemented. Observed SPY daily coverage has 27 rejected source rows/session gaps. Hourly coverage starts in December 2023 and has 16 missing expected starts within its observed range. These are flagged, not filled. Adjustments remain unverified. |
 | Settings and appearance | Connections, schedules, sessions/providers, Shadow reset, storage/backups and access settings are local. Light mode is the default. The browser saves theme and per-period Top N choices. |
-| Private viewing | The IP option binds the viewer to one private IPv4 on port 80 after Access is configured. The viewer checks the source address and JWT independently and rejects local modules and mutations. Socket and streaming tests exercise the origin using signed test JWTs. A real Access sign-in and MFA challenge require the private route and application in your Cloudflare account. |
+| Shared dashboard | The optional loopback viewer validates JWTs and rejects local modules and mutations. The Worker proxies read-only views and live SSE through a fixed VPC Service and shows an offline page when it cannot reach Windows. Gateway integration tests use signed test JWTs and real sockets. A real sign-in and MFA challenge require the Worker and Access application in your Cloudflare account. |
 | Startup, backups and recovery | The scheduled task runs the local service. Interrupted jobs recover under the worker lock. A post-upgrade backup restored with SQLite integrity `ok`, all 36 referenced Parquet files, queue-progress columns and no embedded credentials. The upgrade preserved existing cash, positions and request history. |
 | Disconnected and expired-session feedback | HTML responses, sign-in redirects and incomplete JSON responses are rejected as unavailable data. Overview hides account metrics until its data is available; missing positions are not presented as zero holdings. Regression tests cover response decoding and render the real React Overview without data to reject invented zero counts. |
 | Tests, load and cleanup | Run the Python and JavaScript suites, production build, and 330-request load test on Windows. The load check exercises the local and viewing listeners with 16 clients and verifies one worker, WAL and SQLite integrity. It removes its temporary dataset. |
 
-Remote verification needs the private route, Access policy with MFA, local team URL and audience settings, and an enrolled viewer's device. Complete stock rankings and attribution need point-in-time SPY constituents and adjusted constituent prices for the requested dates. Older intraday history requires a suitably licensed dataset.
+Remote verification needs the Worker, Tunnel VPC Service, Access policy with MFA, and matching local team URL and audience. Complete stock rankings and attribution need point-in-time SPY constituents and adjusted constituent prices for the requested dates. Older intraday history requires a suitably licensed dataset.

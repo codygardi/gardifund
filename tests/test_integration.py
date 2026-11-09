@@ -152,8 +152,8 @@ def test_local_origin_host_and_secret_boundaries(setup):
     assert mutate(client, 'PATCH', '/api/settings', json={"top_n": 10}).status_code == 200
 
 
-@pytest.mark.parametrize('private_view_ip', ['', '192.168.60.20'])
-def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkeypatch, private_view_ip):
+@pytest.mark.parametrize('share_details', [False, True])
+def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkeypatch, share_details):
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     class FakeJWKS:
         def __init__(self, *args, **kwargs): pass
@@ -166,7 +166,9 @@ def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkey
             account['orders'] = [{'symbol':'MSFT', 'side':'buy', 'quantity':1, 'status':'filled',
                                   'avg_fill_price':25, 'account_number':'PRIVATE-ORDER-ID', 'id':'PRIVATE-ORDER-ID'}]
             return [account]
-    settings = config(tmp_path, "cloudflare").model_copy(update={'private_view_ip': private_view_ip})
+    settings = config(tmp_path, "cloudflare")
+    assert settings.share_position_details is False
+    settings.share_position_details = share_details
     app = create_app(settings, adapter=AccountDetails())
     sync_accounts(app.state.db, AccountDetails())
     shadow = app.state.db
@@ -211,11 +213,16 @@ def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkey
         live = client.get('/view/overview?mode=live', headers=auth)
         assert live.status_code == 200 and live.json()['summary']['equity'] == 5500
         assert live.json()['summary']['open_positions'] == 1 and live.json()['summary']['order_count'] == 1
-        assert live.json()['positions'][0]['symbol'] == 'AAPL' and live.json()['orders'][0]['symbol'] == 'MSFT'
         simulated = client.get('/view/overview?mode=shadow', headers=auth)
         assert simulated.json()['summary']['cash'] == 900
         assert simulated.json()['summary']['open_positions'] == 1 and simulated.json()['summary']['order_count'] == 1
-        assert simulated.json()['positions'][0]['symbol'] == 'QQQ'
+        if share_details:
+            assert live.json()['positions'][0]['symbol'] == 'AAPL' and live.json()['orders'][0]['symbol'] == 'MSFT'
+            assert simulated.json()['positions'][0]['symbol'] == 'QQQ'
+        else:
+            for response in (live, simulated):
+                assert {'positions', 'orders'}.isdisjoint(response.json())
+                assert all(symbol not in response.text for symbol in ('AAPL', 'MSFT', 'QQQ'))
         portfolio = client.get('/view/positions', headers=auth)
         assert portfolio.status_code == 403
         for path in ('/view/discovery','/view/database','/view/market/quality?symbol=SPY','/view/settings','/view/setup-access','/view/positions'):
@@ -235,10 +242,6 @@ def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkey
                              ('DELETE','/api/setups/AAPL'), ('POST','/api/setup-access/unlock'),
                              ('POST','/api/setups/live/drafts'), ('POST','/view/overview'), ('PATCH','/view/state')]:
             assert client.request(method, path, headers={**auth, 'Origin':'https://fund.example', 'X-Gardifund-Request':'1'}).status_code == 403
-    if private_view_ip:
-        with TestClient(app, base_url=f'http://{host}:{port}', client=('192.168.60.21', 1234)) as peer:
-            forged = {**auth, 'X-Forwarded-For': private_view_ip}
-            assert peer.get('/view/state', headers=forged).status_code == 403
 
 
 def test_cloudflare_mode_fails_closed_when_unconfigured(tmp_path):

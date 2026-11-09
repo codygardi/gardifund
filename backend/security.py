@@ -19,10 +19,13 @@ class AccessGuard:
         # the thread pool used for local API requests during an Access outage.
         self.jwt_limiter = anyio.CapacityLimiter(1)
         self.issuer = settings.cf_team_domain.rstrip("/")
-        parsed = urlsplit(self.issuer)
+        try:
+            parsed = urlsplit(self.issuer)
+        except ValueError:
+            return
         valid = (parsed.scheme == "https" and parsed.hostname is not None
                  and parsed.hostname.endswith(".cloudflareaccess.com")
-                 and not parsed.username and not parsed.password and not parsed.port
+                 and parsed.netloc == parsed.hostname
                  and not parsed.path and not parsed.query and not parsed.fragment)
         if valid and settings.cf_audience:
             # Cache the JWKS for five minutes, but do not cache individual keys forever:
@@ -58,10 +61,6 @@ class AccessGuard:
         elif (server and tuple(server) == self.settings.viewing_address
               and self.settings.auth_mode == "cloudflare"):
             request.state.access_scope = "remote"
-            if self.settings.private_view_ip:
-                client = request.client.host if request.client else ""
-                if client not in {"127.0.0.1", self.settings.private_view_ip}:
-                    return 403, "Private viewing requires the Tunnel connector on this PC."
             if not self.jwks:
                 return 503, "Cloudflare Access is not configured."
             token = request.headers.get("cf-access-jwt-assertion", "")

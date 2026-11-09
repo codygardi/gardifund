@@ -4,6 +4,9 @@
 .tools/
 node_modules/
 dist/
+pages-dist/
+deploy/worker/wrangler.generated.json
+.wrangler/
 .dev.vars*
 data/
 backups/

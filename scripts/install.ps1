@@ -20,11 +20,11 @@ if (-not (Test-Path -LiteralPath '.env')) {
 PRODUCTION_API_KEY=
 SETUPS_PASSWORD_HASH=
 
-# Optional private Cloudflare viewing.
-GARDIFUND_AUTH_MODE=cloudflare
+# Optional read-only Worker connection. See deploy/github-pages.md.
+GARDIFUND_AUTH_MODE=local
 CF_ACCESS_TEAM_DOMAIN=
 CF_ACCESS_AUD=
-GARDIFUND_PRIVATE_VIEW_IP=
+GARDIFUND_SHARE_POSITION_DETAILS=false
 '@
     New-Item -ItemType File -Path '.env' -Value ($initialConfig + [Environment]::NewLine) | Out-Null
     Write-Host 'Created a blank .env. Set the Tradier key and any Cloudflare Access settings locally.'

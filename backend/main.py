@@ -145,7 +145,8 @@ def create_app(settings: Settings | None = None, adapter=None):
                                                  "next_run": j["next_run"]} for j in sector_jobs if j["status"] == "error"]},
                 "connection": {"tradier_configured": bool(settings.production_api_key), "auth_mode": settings.auth_mode,
                                "access_configured": access_guard.jwks is not None,
-                               "private_view_ip": settings.private_view_ip if settings.auth_mode == "cloudflare" else "",
+                               "remote_port": settings.remote_port,
+                               "share_position_details": settings.share_position_details,
                                "live_orders_enabled": False}}
 
     @app.get("/api/events")
@@ -528,13 +529,16 @@ def create_app(settings: Settings | None = None, adapter=None):
     @app.get("/view/overview", include_in_schema=False)
     def view_overview(mode: Literal["live", "shadow"] = "live"):
         raw = overview(mode)
-        positions = [p for p in portfolio_positions()['rows'] if p['mode'] == mode]
-        def project_orders(rows):
+        def shared_details(orders):
+            if not settings.share_position_details:
+                return {}
             text_fields = {'symbol', 'side', 'status', 'create_date', 'order_type'}
             numeric_fields = {'created', 'quantity', 'price_cents', 'fill_price', 'avg_fill_price', 'price', 'limit_price'}
-            return [{k: (v[:160] if isinstance(v, str) else None) if k in text_fields else
-                        (v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None)
-                     for k, v in row.items() if k in text_fields | numeric_fields} for row in rows if isinstance(row, dict)]
+            return {'positions': [p for p in portfolio_positions()['rows'] if p['mode'] == mode],
+                    'orders': [{k: (v[:160] if isinstance(v, str) else None) if k in text_fields else
+                                 (v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None)
+                                for k, v in row.items() if k in text_fields | numeric_fields}
+                               for row in orders if isinstance(row, dict)]}
         if mode == "shadow":
             ledger = raw["state"]
             order_count = raw['activity_count']
@@ -543,7 +547,7 @@ def create_app(settings: Settings | None = None, adapter=None):
                                 "equity": raw["equity_cents"] / 100 if raw["equity_cents"] is not None and ledger["initialized"] else None,
                                 "settled_cash":ledger['settled_cash_cents'] / 100, 'unsettled_cash':ledger['unsettled_cash_cents'] / 100,
                                 "realized": raw["realized_cents"] / 100, "open_positions": len(raw["positions"]), "order_count": order_count},
-                    'positions':positions, 'orders':project_orders(raw['activity']),
+                    **shared_details(raw['activity']),
                     "performance": [{"created": p["created"], "equity_cents": p["equity_cents"]} for p in raw["performance"]],
                     'daily_performance':raw['daily_performance']}
         accounts = raw["accounts"]
@@ -555,7 +559,7 @@ def create_app(settings: Settings | None = None, adapter=None):
                             "open_positions": sum(len(a.get("positions") or []) for a in accounts),
                             "order_count": sum(len(a.get("orders") or []) for a in accounts),
                             "synced": min((a["synced"] for a in accounts), default=None)},
-                'positions':positions, 'orders':project_orders([o for account in accounts for o in account.get('orders', [])]),
+                **shared_details(o for account in accounts for o in account.get('orders', [])),
                 'daily_performance':raw['daily_performance']}
 
     @app.get("/api/positions")
