@@ -55,8 +55,13 @@ class AccessGuard:
                              "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto"}
             if proxy_headers.intersection(request.headers.keys()):
                 return 403, "The local control listener does not accept proxied requests."
-        elif port == self.settings.remote_port and self.settings.auth_mode == "cloudflare":
+        elif (server and tuple(server) == self.settings.viewing_address
+              and self.settings.auth_mode == "cloudflare"):
             request.state.access_scope = "remote"
+            if self.settings.private_view_ip:
+                client = request.client.host if request.client else ""
+                if client not in {"127.0.0.1", self.settings.private_view_ip}:
+                    return 403, "Private viewing requires the Tunnel connector on this PC."
             if not self.jwks:
                 return 503, "Cloudflare Access is not configured."
             token = request.headers.get("cf-access-jwt-assertion", "")

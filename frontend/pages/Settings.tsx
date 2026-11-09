@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, Check, Cloud, Clock3, Database, HardDriveDownload, KeyRound, Laptop, Moon, RefreshCw, ShieldCheck, Sun, Wallet } from 'lucide-react';
+import { Check, Cloud, Clock3, Database, HardDriveDownload, KeyRound, Laptop, Moon, RefreshCw, ShieldCheck, Sun, Wallet } from 'lucide-react';
 import { api, money, useApp, useResource, when } from '../api';
 import { Tip } from '../ui';
 import ShadowReset from '../ShadowReset';
@@ -17,6 +17,7 @@ export default function SettingsPage() {
   async function backup() { try { const result = await api('/backups',{method:'POST'}); setMessage(`Backup created: ${result.name}`); refresh(); } catch(e:any) { setMessage(e.message); } }
   async function appearance(value:string) { try { await api('/settings',{method:'PATCH',body:JSON.stringify({appearance:value})}); setTheme(value as 'dark'|'light'); refresh(); } catch(e:any) { setMessage(e.message); } }
   if (state?.access_scope !== 'local') return null;
+  const privateViewIp = state.connection?.private_view_ip;
   return <>
     <div className="page-heading"><div><div className="page-kicker"><span className="kicker-line"/> MAKE IT YOURS</div><h1>Settings<span className="heading-period">.</span></h1><p className="page-subtitle">The connections and controls behind your workspace.</p></div></div>
     {message && <div className="notice" role="status">{message}<button aria-label="Dismiss" onClick={() => setMessage('')}>×</button></div>}
@@ -25,7 +26,26 @@ export default function SettingsPage() {
       <section className="panel settings-panel"><div className="settings-heading"><div className="settings-icon"><Wallet size={18}/></div><div><h2>Shadow cash account</h2><p>A separate $10,000 starting balance.</p></div></div><div className="setting-row"><div><strong>Settled cash</strong><small>Available for new simulated purchases</small></div><strong>{money(shadow?.state?.settled_cash_cents / 100)}</strong></div><div className="setting-row"><div><strong>Unsettled sale proceeds</strong><small>Conservative T+1 settlement calendar</small></div><strong>{money(shadow?.state?.unsettled_cash_cents / 100)}</strong></div><ShadowReset/><p className="panel-caption">Manage entries and exits in Investing. Market simulations use fresh ask/bid quotes. Fees, order-book priority and market impact are not modeled.</p></section>
       <section className="panel settings-panel"><div className="settings-heading"><div className="settings-icon"><Cloud size={18}/></div><div><h2>Sessions & providers</h2><p>Explicit sources for every series.</p></div></div><div className="setting-row"><div><strong>Discovery session</strong><small>Tradier market clock: premarket through regular-session close</small></div><span className="soft-badge">PREMARKET + OPEN</span></div><div className="setting-row"><div><strong>Intraday history session</strong><small>Regular US market session for Yahoo intraday data</small></div><span className="soft-badge">REGULAR</span></div><div className="setting-row"><div><strong>Historical adjustments</strong><small>Tradier and Yahoo data remain unverified until independently checked</small></div><Tip text="Provider-declared adjustments on imported data are recorded but are not independently certified."/></div></section>
       <section className="panel settings-panel"><div className="settings-heading"><div className="settings-icon"><Database size={18}/></div><div><h2>Storage & backups</h2><p>SQLite WAL and local Parquet files.</p></div></div><div className="setting-row"><div><strong>Local data directory</strong><small>Workspace data/ folder; backups exclude credentials</small></div><button className="button secondary" onClick={backup}><HardDriveDownload size={15}/> Create backup</button></div><div className="setting-row"><div><strong>Most recent backup</strong><small>{backups?.backups?.[0]?.name || 'No backups created yet'}</small></div><span className="muted small">{when(backups?.backups?.[0]?.created)}</span></div><p className="panel-caption">Backups contain private account data. Store them securely; restore while the app is stopped.</p></section>
-      <section className="panel settings-panel"><div className="settings-heading"><div className="settings-icon"><ShieldCheck size={18}/></div><div><h2>Access</h2><p>Control how this workspace is reached.</p></div></div><div className="setting-row"><div><strong>Authentication mode</strong><small>{state?.connection?.auth_mode === 'local' ? 'Loopback-only development mode' : 'Cloudflare Access JWT validation'}</small></div><span className="soft-badge">{state?.connection?.auth_mode?.toUpperCase() || '—'}</span></div><div className="setting-row"><div><strong>Live order submission</strong><small>No endpoint exists for placing a live trade</small></div><span className="connection-pill">DISABLED</span></div><p className="panel-caption">For remote access, configure Cloudflare Tunnel and an Access policy with MFA. The backend requires a valid signed token in Cloudflare mode.</p></section>
+      <section className="panel settings-panel">
+        <div className="settings-heading">
+          <div className="settings-icon"><ShieldCheck size={18}/></div>
+          <div><h2>Access</h2><p>Control how this workspace is reached.</p></div>
+        </div>
+        <div className="setting-row">
+          <div>
+            <strong>Private viewer</strong>
+            <small>{privateViewIp ? 'http://' + privateViewIp + '/' : 'Set the private IP in the local .env'}</small>
+          </div>
+          <span className="soft-badge">
+            {!privateViewIp ? 'LOCAL ONLY' : state.connection.access_configured ? 'JWT CONFIGURED' : 'ACCESS SETUP PENDING'}
+          </span>
+        </div>
+        <div className="setting-row">
+          <div><strong>Live order submission</strong><small>Open or close real positions in Tradier</small></div>
+          <span className="connection-pill">DISABLED</span>
+        </div>
+        <p className="panel-caption">Viewers connect through Cloudflare One Client and sign in with Access MFA. Add the Access team URL and audience in the local .env.</p>
+      </section>
       <section className="panel settings-panel appearance-panel"><div className="settings-heading"><div className="settings-icon"><Laptop size={18}/></div><div><h2>Appearance</h2><p>Choose your workspace theme.</p></div></div><div className="theme-options"><button onClick={() => appearance('dark')} className={theme === 'dark' ? 'theme-choice selected' : 'theme-choice'}><Moon size={17}/> Dark {theme === 'dark' && <Check size={15}/>}</button><button onClick={() => appearance('light')} className={theme === 'light' ? 'theme-choice selected' : 'theme-choice'}><Sun size={17}/> Light {theme === 'light' && <Check size={15}/>}</button></div></section>
     </div>
   </>;

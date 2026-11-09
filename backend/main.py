@@ -95,7 +95,9 @@ def create_app(settings: Settings | None = None, adapter=None):
             adapter.close()
 
     app = FastAPI(title="GARDiFUND", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
-    app.middleware("http")(AccessGuard(settings))
+    access_guard = AccessGuard(settings)
+    app.middleware("http")(access_guard)
+    app.state.access_guard = access_guard
     app.state.db, app.state.market, app.state.worker, app.state.discovery, app.state.setup_lock = db, market, worker, discovery_store, setup_lock
 
     @app.exception_handler(ProviderError)
@@ -142,7 +144,8 @@ def create_app(settings: Settings | None = None, adapter=None):
                                    "failures": [{"series": j["name"].removeprefix("sector_intraday:"), "message": j["message"],
                                                  "next_run": j["next_run"]} for j in sector_jobs if j["status"] == "error"]},
                 "connection": {"tradier_configured": bool(settings.production_api_key), "auth_mode": settings.auth_mode,
-                               "access_configured": bool(settings.cf_audience and settings.cf_team_domain),
+                               "access_configured": access_guard.jwks is not None,
+                               "private_view_ip": settings.private_view_ip if settings.auth_mode == "cloudflare" else "",
                                "live_orders_enabled": False}}
 
     @app.get("/api/events")

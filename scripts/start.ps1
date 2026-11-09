@@ -22,7 +22,7 @@ if ($LocalDev) {
 } else {
     $env:GARDIFUND_AUTH_MODE = 'cloudflare'
     Write-Host "Local control: http://127.0.0.1:$Port/"
-    Write-Host "Cloudflare read-only origin: 127.0.0.1:$RemotePort (Access JWT required)."
+    Write-Host 'Private viewing uses the configured Windows IP on port 80 after Access setup.'
 }
 & '.\.venv\Scripts\python.exe' -m backend.server
 exit $LASTEXITCODE

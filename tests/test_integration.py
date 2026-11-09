@@ -152,7 +152,8 @@ def test_local_origin_host_and_secret_boundaries(setup):
     assert mutate(client, 'PATCH', '/api/settings', json={"top_n": 10}).status_code == 200
 
 
-def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkeypatch):
+@pytest.mark.parametrize('private_view_ip', ['', '192.168.60.20'])
+def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkeypatch, private_view_ip):
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     class FakeJWKS:
         def __init__(self, *args, **kwargs): pass
@@ -165,7 +166,8 @@ def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkey
             account['orders'] = [{'symbol':'MSFT', 'side':'buy', 'quantity':1, 'status':'filled',
                                   'avg_fill_price':25, 'account_number':'PRIVATE-ORDER-ID', 'id':'PRIVATE-ORDER-ID'}]
             return [account]
-    app = create_app(config(tmp_path, "cloudflare"), adapter=AccountDetails())
+    settings = config(tmp_path, "cloudflare").model_copy(update={'private_view_ip': private_view_ip})
+    app = create_app(settings, adapter=AccountDetails())
     sync_accounts(app.state.db, AccountDetails())
     shadow = app.state.db
     from backend import shadow as shadow_module
@@ -182,7 +184,8 @@ def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkey
     now = datetime.now(timezone.utc)
     base = {"iss":"https://example.cloudflareaccess.com", "aud":"audience-123", "exp":now + timedelta(minutes=5)}
     def token(**changes): return jwt.encode({**base, **changes}, private_key, algorithm='RS256', headers={"kid":"key-1"})
-    with TestClient(app, base_url='http://127.0.0.1:8766', client=('127.0.0.1', 1234)) as client:
+    host, port = settings.viewing_address
+    with TestClient(app, base_url=f'http://{host}:{port}', client=('127.0.0.1', 1234)) as client:
         assert client.get('/healthz').status_code == 200
         assert client.get('/view/state').status_code == 401
         assert client.get('/').status_code == 401
@@ -227,6 +230,10 @@ def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkey
                              ('DELETE','/api/setups/AAPL'), ('POST','/api/setup-access/unlock'),
                              ('POST','/api/setups/live/drafts'), ('POST','/view/overview'), ('PATCH','/view/state')]:
             assert client.request(method, path, headers={**auth, 'Origin':'https://fund.example', 'X-Gardifund-Request':'1'}).status_code == 403
+    if private_view_ip:
+        with TestClient(app, base_url=f'http://{host}:{port}', client=('192.168.60.21', 1234)) as peer:
+            forged = {**auth, 'X-Forwarded-For': private_view_ip}
+            assert peer.get('/view/state', headers=forged).status_code == 403
 
 
 def test_cloudflare_mode_fails_closed_when_unconfigured(tmp_path):
