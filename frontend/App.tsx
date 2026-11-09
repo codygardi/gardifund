@@ -67,18 +67,22 @@ function Shell() {
   }
 
   if (viewer && (stateUnavailable || viewerOffline)) return <Offline/>;
+  const homeButton = <button type="button" className="brand" onClick={() => navigate('overview')} aria-label="GARDiFUND home"><Brand/></button>;
   return <div className="app-shell">
+    <div className="navigation-rail">
+      {homeButton}
+      <nav className="primary-nav" aria-label="Main navigation">
+        {visibleNav.map(item => <button type="button" key={item.id} onClick={() => navigate(item.id)}
+          className={`nav-item ${page === item.id ? 'active' : ''}`} aria-current={page === item.id ? 'page' : undefined} aria-label={item.label}>
+          <item.icon size={17} strokeWidth={1.7} aria-hidden="true"/>
+          <span className={item.shortLabel ? 'nav-wide-label' : undefined}>{item.label}</span>
+          {item.shortLabel && <span className="nav-short-label" aria-hidden="true">{item.shortLabel}</span>}
+        </button>)}
+      </nav>
+    </div>
     <header className="app-header">
       <div className="topbar">
-        <button type="button" className="brand" onClick={() => navigate('overview')} aria-label="GARDiFUND home"><Brand/></button>
-        <nav className="primary-nav" aria-label="Main navigation">
-          {visibleNav.map(item => <button type="button" key={item.id} onClick={() => navigate(item.id)}
-            className={`nav-item ${page === item.id ? 'active' : ''}`} aria-current={page === item.id ? 'page' : undefined} aria-label={item.label}>
-            <item.icon size={17} strokeWidth={1.7} aria-hidden="true"/>
-            <span className={item.shortLabel ? 'nav-wide-label' : undefined}>{item.label}</span>
-            {item.shortLabel && <span className="nav-short-label" aria-hidden="true">{item.shortLabel}</span>}
-          </button>)}
-        </nav>
+        {homeButton}
         <div className="top-actions">
           <span className="connection" role="status" title={connected ? 'Connected' : 'Connecting'}>
             <span className={connected ? 'status-dot' : 'status-dot muted'} aria-hidden="true"/>
