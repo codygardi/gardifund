@@ -90,8 +90,7 @@ label { display:flex; flex-direction:column; gap:7px; color:var(--muted); font-s
 .pending-entries { border-top:1px solid var(--border); padding-top:20px; margin-top:24px; }
 .chart-host { height:480px; }
 .chart-mode-controls { display:flex; flex-wrap:wrap; align-items:end; gap:14px; margin:20px 0 0; }
-.chart-mode-controls input { width:110px; }
-.annual-stock-results { padding:8px 0 20px; }
+.period-results { padding:8px 0 20px; }
 .modal label { margin-top:16px; }
 .modal .error { margin-top:14px; }
 .heading-actions { display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end; max-width:380px; }

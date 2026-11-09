@@ -349,12 +349,15 @@ class MarketStore:
                 self.cache.popitem(last=False)
             return result
 
-    def adjusted_closes(self, symbols, start, end):
-        """Read only declared-adjusted files while holding the generation lock."""
+    def daily_endpoint_closes(self, symbols, start, end, adjustment="split_dividend_adjusted"):
+        """Read exact daily endpoints in one Parquet query under the generation lock."""
         prices = {}
         with LOCK:
             with self.db.connect() as conn:
-                files = [dict(r) for r in conn.execute("SELECT symbol,path FROM market_files WHERE interval='1d' AND adjustment='split_dividend_adjusted'") if r["symbol"] in symbols]
+                files = [dict(r) for r in conn.execute(
+                    "SELECT symbol,path FROM market_files WHERE interval='1d' AND (? IS NULL OR adjustment=?)",
+                    (adjustment, adjustment)
+                ) if r["symbol"] in symbols]
             mapping = {}
             for record in files:
                 path = self.resolve_path(record["path"])

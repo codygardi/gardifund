@@ -178,7 +178,8 @@ def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkey
                      (time.time(), 'SPY', 'buy', 1, 10000, 'PRIVATE-DRAFT-NOTE'))
     store_holdings(shadow, '2024-01-02', [{'symbol':'AAPL', 'name':'Apple', 'weight':1, 'sector':'Information Technology'}],
                    'PRIVATE-SOURCE', 'PRIVATE-NOTE')
-    app.state.market.write('SPY', '1d', [{'time':'2024-01-02','open':100,'high':102,'low':99,'close':101,'volume':100}],
+    app.state.market.write('SPY', '1d', [{'time':'2024-01-02','open':100,'high':102,'low':99,'close':101,'volume':100},
+                                         {'time':'2024-01-31','open':103,'high':105,'low':102,'close':104,'volume':100}],
                            'PRIVATE-SOURCE', 'unverified')
     app.state.discovery.scan()
     now = datetime.now(timezone.utc)
@@ -219,7 +220,11 @@ def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkey
         assert portfolio.status_code == 403
         for path in ('/view/discovery','/view/database','/view/market/quality?symbol=SPY','/view/settings','/view/setup-access','/view/positions'):
             assert client.get(path, headers=auth).status_code == 403
-        views = (live, simulated, client.get('/view/state', headers=auth), client.get('/view/bars', headers=auth))
+        ranking = client.get('/view/chart-performance?mode=market&year=2024&month=1&top_n=5', headers=auth)
+        assert ranking.json()['rows'][0]['return_pct'] == pytest.approx((104 / 101 - 1) * 100)
+        assert client.get('/view/chart-performance?mode=market&year=2024&top_n=6', headers=auth).status_code == 422
+        assert client.get('/view/chart-performance?mode=market&year=2024').status_code == 401
+        views = (live, simulated, ranking, client.get('/view/state', headers=auth), client.get('/view/bars', headers=auth))
         for response in views:
             assert response.status_code == 200
             assert all(secret not in response.text for secret in ('ACCT1234', 'PRIVATE-POSITION-ID', 'PRIVATE-ORDER-ID',

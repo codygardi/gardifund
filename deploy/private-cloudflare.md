@@ -21,7 +21,7 @@ Cloudflare supports browser sign-in and an origin application JWT for private HT
 
 ## 3. Connect the Windows app
 
-In the existing local `.env`, set the private IP, Zero Trust team URL, and audience tag for the new Access application.
+In the existing local `.env`, set the private IP, the full Zero Trust team URL with its `https://` prefix, and the Audience (AUD) Tag from the Access application's Additional settings. [Cloudflare JWT settings](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/#get-your-aud-tag)
 
 ```dotenv
 GARDIFUND_PRIVATE_VIEW_IP=192.168.0.175

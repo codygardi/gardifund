@@ -15,8 +15,19 @@ if ($LASTEXITCODE -ne 0) { throw 'Node dependency installation failed.' }
 npm run build
 if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed.' }
 if (-not (Test-Path -LiteralPath '.env')) {
-    Copy-Item -LiteralPath '.env.example' -Destination '.env'
-    Write-Host 'Created .env from the example. Add the production key and Cloudflare Access settings; use scripts/set-setup-password.py for the Live password.'
+    $initialConfig = @'
+# Add the Tradier production key. Use scripts/set-setup-password.py for the Live lock.
+PRODUCTION_API_KEY=
+SETUPS_PASSWORD_HASH=
+
+# Optional private Cloudflare viewing.
+GARDIFUND_AUTH_MODE=cloudflare
+CF_ACCESS_TEAM_DOMAIN=
+CF_ACCESS_AUD=
+GARDIFUND_PRIVATE_VIEW_IP=
+'@
+    New-Item -ItemType File -Path '.env' -Value ($initialConfig + [Environment]::NewLine) | Out-Null
+    Write-Host 'Created a blank .env. Set the Tradier key and any Cloudflare Access settings locally.'
 } else {
     Write-Host 'Existing .env preserved.'
 }

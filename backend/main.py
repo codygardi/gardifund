@@ -28,7 +28,7 @@ from .services import SECTOR_NAMES, attribution, discovery_rows, enrich_position
 from .tradier import Tradier, ProviderError
 from .worker import Worker
 from .execution import regular_session
-from .annual_stocks import AnnualStocks
+from .performance import PerformanceMode, PeriodPerformance
 
 
 class SettingsUpdate(BaseModel):
@@ -81,7 +81,7 @@ def create_app(settings: Settings | None = None, adapter=None):
     adapter = adapter or Tradier(settings.production_api_key)
     discovery_store = MarketDiscovery(db, adapter)
     worker = Worker(db, adapter, market, discovery_store)
-    annual_stocks = AnnualStocks(db, market)
+    performance = PeriodPerformance(db, market)
     setup_lock = LiveSetupLock(settings.setups_password_hash)
 
     @asynccontextmanager
@@ -312,10 +312,11 @@ def create_app(settings: Settings | None = None, adapter=None):
             output.append({"symbol": symbol, "name": name, "quote": by_symbol.get(symbol), "top": stocks[:top_n], "classified_count": len(stocks)})
         return {"rows": output, "note": "Sector labels inferred from same-date sector ETF membership. Top stocks ranked by latest cached daily quote change."}
 
-    @app.get('/api/top-stocks')
-    @app.get('/view/top-stocks', include_in_schema=False)
-    def top_stocks(year:int = Query(ge=2000, le=2100), top_n:int = Query(10, ge=1, le=10)):
-        return annual_stocks.get(year, top_n)
+    @app.get("/api/chart-performance")
+    @app.get("/view/chart-performance", include_in_schema=False)
+    def chart_performance(mode: PerformanceMode, year: int = Query(ge=2000, le=2100),
+                          month: int | None = Query(None, ge=1, le=12), top_n: int = Query(5, ge=1, le=5)):
+        return performance.get(mode, year, month, top_n)
 
     @app.get("/api/attribution")
     def attribution_api(start: str, end: str, sector: str = "", limit: int = Query(10, ge=1, le=50)):

@@ -185,7 +185,7 @@ def attribution(db, market, start, end, sector=None, limit=10):
         unclassified = sum(1 for h in holdings if not h["sector"])
         if sector:
             holdings = [r for r in holdings if r["sector"] == sector]
-    prices = market.adjusted_closes({h["symbol"] for h in holdings}, start, end)
+    prices = market.daily_endpoint_closes({h["symbol"] for h in holdings}, start, end)
     output, missing = [], 0
     sector_weight = sum(h["weight"] for h in holdings)
     for h in holdings:

@@ -75,7 +75,7 @@ class AccessGuard:
             except Exception:
                 return 401, "Invalid or expired Cloudflare Access token."
             allowed_views = {"/view/state", "/view/overview", "/view/events", "/view/bars",
-                             "/view/sectors", "/view/attribution", "/view/top-stocks"}
+                             "/view/sectors", "/view/attribution", "/view/chart-performance"}
             path = request.url.path
             if request.method not in {"GET", "HEAD"} or not (path in allowed_views or path in {"/", "/scope"} or path.startswith("/assets/")):
                 return 403, "The remote listener exposes read-only views only."
