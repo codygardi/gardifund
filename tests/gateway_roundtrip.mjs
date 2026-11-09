@@ -42,6 +42,7 @@ assert.equal(market.status, 200);
 const firstBars = await market.text();
 assert.equal(JSON.parse(firstBars).bars.at(-1).close, 101);
 assert.doesNotMatch(firstBars, /SYNTHETIC-PRIVATE-SOURCE/);
+assert.equal((await view('/view/bars?symbol=SPY&interval=30m')).status, 422);
 
 // Even a wrongly configured VPC destination must not turn this gateway into a control API.
 const wrongDestination = await view('/view/state', 'GET', binding(QA_LOCAL_ORIGIN));

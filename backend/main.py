@@ -21,7 +21,7 @@ from . import shadow
 from .config import ROOT, Settings
 from .db import Database, SECTORS
 from .discovery import MarketDiscovery
-from .market import LOCK, MarketStore, valid_symbol
+from .market import BAR_INTERVALS, LOCK, BarInterval, MarketStore, valid_symbol
 from .security import AccessGuard
 from .setup_lock import LiveSetupLock
 from .services import SECTOR_NAMES, attribution, discovery_rows, enrich_positions, store_holdings
@@ -44,7 +44,7 @@ class SetupUnlock(BaseModel):
 
 
 class SectorHistoryRequest(BaseModel):
-    interval: Literal["1h", "30m"]
+    interval: Literal["1h"]
     symbols: list[str] = Field(min_length=1, max_length=len(SECTORS))
 
 
@@ -125,7 +125,7 @@ def create_app(settings: Settings | None = None, adapter=None):
     def state(request: Request):
         with db.connect() as conn:
             jobs = [dict(r) for r in conn.execute("SELECT * FROM jobs WHERE name NOT LIKE 'sector_intraday:%' AND name NOT LIKE 'sector_reference:%' AND name!='universe_otc' ORDER BY name")]
-            sector_jobs = [dict(r) for r in conn.execute("SELECT name,status,message,last_finished,next_run FROM jobs WHERE name LIKE 'sector_intraday:%'")]
+            sector_jobs = [dict(r) for r in conn.execute("SELECT name,status,message,last_finished,next_run FROM jobs WHERE name LIKE 'sector_intraday:%:1h'")]
             latest = conn.execute("SELECT * FROM holdings_snapshots ORDER BY as_of DESC LIMIT 1").fetchone()
             last_id = conn.execute("SELECT COALESCE(MAX(id),0) FROM events").fetchone()[0]
             session = conn.execute('SELECT state,observed FROM market_session WHERE id=1').fetchone()
@@ -188,7 +188,7 @@ def create_app(settings: Settings | None = None, adapter=None):
                         payload = event.get("payload") or {}
                         if (event["module"] == "charts" and event["action"] == "market_updated"
                                 and payload.get("symbol") in {"SPY", *(s for s, _ in SECTORS)}
-                                and payload.get("interval") in {"1d", "1h", "30m"}):
+                                and payload.get("interval") in BAR_INTERVALS):
                             event["payload"] = {"symbol": payload["symbol"], "interval": payload["interval"]}
                         else:
                             module = ('overview' if event['module'] == 'overview' or event['module'] == 'investing' and event['action'].startswith('shadow_') else
@@ -262,13 +262,13 @@ def create_app(settings: Settings | None = None, adapter=None):
         return discovery_store.snapshot()
 
     @app.get("/api/bars")
-    def bars(symbol: str = "SPY", interval: Literal["1d", "1h", "30m"] = "1d",
+    def bars(symbol: str = "SPY", interval: BarInterval = "1d",
              start: str | None = None, end: str | None = None, limit: int = Query(12000, ge=1, le=30000),
              before: str | None = None):
         return market.read(symbol, interval, start, end, limit, before)
 
     @app.get("/api/market/quality")
-    def market_quality(symbol: str, interval: Literal["1d", "1h", "30m"] = "1d", limit: int = Query(200, ge=1, le=500)):
+    def market_quality(symbol: str, interval: BarInterval = "1d", limit: int = Query(200, ge=1, le=500)):
         return market.quality(symbol, interval, limit)
 
     @app.post("/api/market/sector-history")
@@ -328,11 +328,13 @@ def create_app(settings: Settings | None = None, adapter=None):
     @app.get("/api/database")
     def database():
         with db.connect() as conn:
-            files = [dict(r) for r in conn.execute("SELECT symbol,interval,source,adjustment,coverage_start,coverage_end,row_count,updated,status,anomaly_count,missing_sessions,unexpected_sessions FROM market_files ORDER BY symbol,interval")]
+            files = [dict(r) for r in conn.execute("""SELECT symbol,interval,source,adjustment,coverage_start,coverage_end,
+                row_count,updated,status,anomaly_count,missing_sessions,unexpected_sessions
+                FROM market_files WHERE interval IN (?,?) ORDER BY symbol,interval""", BAR_INTERVALS)]
             audit_row = conn.execute("""SELECT audited,primary_updated,reference,result FROM quality_audits
                                      WHERE symbol='SPY' AND interval='1d' ORDER BY id DESC LIMIT 1""").fetchone()
             snapshots = [dict(r) for r in conn.execute("SELECT * FROM holdings_snapshots ORDER BY as_of DESC LIMIT 100")]
-            imports = [dict(r) for r in conn.execute("SELECT * FROM imports ORDER BY id DESC LIMIT 100")]
+            imports = [dict(r) for r in conn.execute("SELECT * FROM imports WHERE dataset NOT LIKE '% 30m' ORDER BY id DESC LIMIT 100")]
             counts = {"instruments": conn.execute("SELECT COUNT(*) FROM instruments").fetchone()[0],
                       "holdings_snapshots": conn.execute("SELECT COUNT(*) FROM holdings_snapshots").fetchone()[0],
                       "corporate_actions": conn.execute("SELECT COUNT(*) FROM corporate_actions").fetchone()[0],
@@ -425,7 +427,7 @@ def create_app(settings: Settings | None = None, adapter=None):
         return {"queued": name}
 
     @app.post("/api/import/bars")
-    async def import_bars(file: UploadFile = File(), symbol: str = Form(), interval: Literal["1d", "1h", "30m"] = Form(),
+    async def import_bars(file: UploadFile = File(), symbol: str = Form(), interval: BarInterval = Form(),
                           source: str = Form(), adjustment: Literal["unverified", "split_dividend_adjusted"] = Form(),
                           replace: bool = Form(False)):
         if not source.strip():
@@ -620,7 +622,7 @@ def create_app(settings: Settings | None = None, adapter=None):
         return {**coverage, "source": "Stored market data"} if coverage else None
 
     @app.get("/view/bars", include_in_schema=False)
-    def view_bars(symbol: str = "SPY", interval: Literal["1d", "1h", "30m"] = "1d", start: str | None = None,
+    def view_bars(symbol: str = "SPY", interval: BarInterval = "1d", start: str | None = None,
                   end: str | None = None, limit: int = Query(12000, ge=1, le=30000), before: str | None = None):
         raw = market.read(view_symbol(symbol), interval, start, end, limit, before)
         return {**raw, "coverage": public_coverage(raw["coverage"])}

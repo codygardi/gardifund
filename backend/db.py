@@ -194,9 +194,11 @@ class Database:
                     last_started=NULL,last_finished=NULL,next_run=?
                     WHERE name='discovery' AND status!='running' AND message LIKE 'Scanned % SPY holdings%'""", (now,))
                 conn.execute("INSERT INTO migrations(name) VALUES(?)", (migration,))
-            for index, (interval, (symbol, _)) in enumerate((interval, sector) for interval in ("1h", "30m") for sector in SECTORS):
+            # Preserve retired series for backups while stopping their refresh jobs.
+            conn.execute("UPDATE jobs SET enabled=0 WHERE name LIKE 'sector_intraday:%:30m' AND enabled=1")
+            for index, (symbol, _) in enumerate(SECTORS):
                 conn.execute("INSERT OR IGNORE INTO jobs(name,interval_seconds,next_run) VALUES(?,?,?)",
-                             (f"sector_intraday:{symbol}:{interval}", 86400, now + 45 + index * 20))
+                             (f"sector_intraday:{symbol}:1h", 86400, now + 45 + index * 20))
             migration = "spy_only_discovery_v1"
             if not conn.execute("SELECT 1 FROM migrations WHERE name=?", (migration,)).fetchone():
                 # Retain legacy reference data, but prevent unrelated background jobs

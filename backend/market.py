@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from threading import RLock
+from typing import Literal, get_args
 
 import duckdb
 import pyarrow as pa
@@ -22,6 +23,8 @@ from .audit import compare_daily_closes, yahoo_daily_reference
 from .tradier import ProviderError, Tradier
 
 SYMBOL = re.compile(r"^[A-Z][A-Z0-9.$\-]{0,14}$")
+BarInterval = Literal["1d", "1h"]
+BAR_INTERVALS = get_args(BarInterval)
 BAR_SCHEMA = pa.schema([("time", pa.string()), ("open", pa.float64()), ("high", pa.float64()),
                         ("low", pa.float64()), ("close", pa.float64()), ("volume", pa.int64())])
 LOCK = RLock()
@@ -65,7 +68,7 @@ def nyse_session_hours(first_year, last_year):
 
 def intraday_gaps(stamps, interval):
     """Compare Yahoo regular-session bar starts only within the observed span."""
-    if interval not in {"1h", "30m"} or not stamps:
+    if interval != "1h" or not stamps:
         return {"checked": False, "reason": "No supported intraday bars are available."}
     if len(stamps) > 100000:
         return {"checked": False, "reason": "The series exceeds the 100,000-bar diagnostic limit."}
@@ -80,7 +83,7 @@ def intraday_gaps(stamps, interval):
         first, last = min(observed), max(observed)
         if first.year < 1900 or last.year > 2100 or last.year - first.year > 50:
             return {"checked": False, "reason": "The observed date range exceeds the diagnostic limit."}
-        step = timedelta(hours=1) if interval == "1h" else timedelta(minutes=30)
+        step = timedelta(hours=1)
         expected, by_session = set(), {}
         for day, opening, closing in nyse_session_hours(first.year, last.year):
             if not first.date().isoformat() <= day <= last.date().isoformat():
@@ -231,7 +234,7 @@ class MarketStore:
 
     def write(self, symbol, interval, rows, source, adjustment, replace=False, anomalies=None):
         symbol = valid_symbol(symbol)
-        if interval not in {"1d", "1h", "30m"}:
+        if interval not in BAR_INTERVALS:
             raise ValueError("Unsupported interval")
         if adjustment not in {"unverified", "split_dividend_adjusted"}:
             raise ValueError("Unsupported adjustment declaration")
@@ -317,7 +320,7 @@ class MarketStore:
 
     def read(self, symbol, interval, start=None, end=None, limit=12000, before=None):
         symbol = valid_symbol(symbol)
-        if interval not in {"1d", "1h", "30m"}:
+        if interval not in BAR_INTERVALS:
             raise ValueError("Unsupported interval")
         with LOCK:
             with self.db.connect() as conn:
@@ -376,7 +379,7 @@ class MarketStore:
 
     def quality(self, symbol, interval, limit=200):
         symbol = valid_symbol(symbol)
-        if interval not in {"1d", "1h", "30m"}:
+        if interval not in BAR_INTERVALS:
             raise ValueError("Unsupported interval")
         limit = min(max(int(limit), 1), 500)
         daily_rows, intraday, pending_stamps, cache_key = None, None, None, None
@@ -465,14 +468,14 @@ class MarketStore:
     def refresh_yahoo(self, symbol, interval):
         import yfinance as yf
         symbol = valid_symbol(symbol)
-        if interval not in {"1h", "30m"}:
+        if interval != "1h":
             raise ValueError("Unsupported Yahoo interval")
         with self.db.connect() as conn:
             prior = conn.execute("SELECT * FROM market_files WHERE symbol=? AND interval=?", (symbol, interval)).fetchone()
         if prior and (prior["source"] != "Yahoo Finance via yfinance" or prior["adjustment"] != "unverified"):
             return None
         # Yahoo's lookback is limited. Persist accumulated bars; do not fill earlier gaps.
-        max_days = 729 if interval == "1h" else 59
+        max_days = 729
         days = max_days
         if prior and prior["coverage_end"]:
             latest = date.fromisoformat(prior["coverage_end"][:10])

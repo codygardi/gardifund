@@ -509,10 +509,11 @@ def test_worker_runs_due_job_without_browser(tmp_path):
 def test_sector_intraday_jobs_are_bounded_persisted_and_queueable(setup):
     app, client = setup
     state = client.get('/api/state').json()
-    assert state['sector_history']['total'] == 22
+    assert state['sector_history']['total'] == 11
     assert {j['name'] for j in state['jobs']} == {'account','discovery','holdings','market','adjustments','portfolio'}
     response = mutate(client, 'POST', '/api/market/sector-history', json={'interval':'1h','symbols':['XLC','XLF']})
     assert response.status_code == 200 and set(response.json()['queued']) == {'XLC','XLF'}
+    assert mutate(client, 'POST', '/api/market/sector-history', json={'interval':'30m','symbols':['XLC']}).status_code == 422
     assert mutate(client, 'POST', '/api/market/sector-history', json={'interval':'1h','symbols':['QQQ']}).status_code == 400
     with app.state.db.connect() as conn:
         queued = conn.execute("SELECT next_run FROM jobs WHERE name='sector_intraday:XLC:1h'").fetchone()[0]
@@ -529,6 +530,39 @@ def test_sector_intraday_jobs_are_bounded_persisted_and_queueable(setup):
     assert market.calls == [('XLC','1h')]
     with pytest.raises(ValueError):
         worker.execute('sector_intraday:QQQ:1h')
+
+
+def test_legacy_half_hour_series_is_archived_outside_the_active_catalog(setup):
+    app, client = setup
+    db, market = app.state.db, app.state.market
+    market.write('SPY', '1h', [{'time': '2024-01-02T14:30:00Z', 'open': 100, 'high': 104,
+                                'low': 99, 'close': 101, 'volume': 1000}], 'Hourly fixture', 'unverified')
+    legacy = market.root / '30m' / 'SPY-legacy.parquet'
+    legacy.parent.mkdir()
+    with db.connect() as conn:
+        hourly_path = conn.execute("SELECT path FROM market_files WHERE symbol='SPY' AND interval='1h'").fetchone()[0]
+        legacy.write_bytes(market.resolve_path(hourly_path).read_bytes())
+        conn.execute("""INSERT INTO market_files(symbol,interval,source,adjustment,updated,status,path,row_count)
+            VALUES ('SPY','30m','Legacy fixture','unverified',0,'complete',?,1)""",
+                     (str(legacy.relative_to(market.root.parent)),))
+        conn.execute("INSERT INTO imports(dataset,source,created,status,message) VALUES('SPY 30m','Legacy fixture',0,'complete','Stored')")
+        conn.execute("INSERT INTO jobs(name,interval_seconds,next_run) VALUES('sector_intraday:XLC:30m',86400,0)")
+
+    Database(db.path)
+    with db.connect() as conn:
+        assert conn.execute("SELECT enabled FROM jobs WHERE name='sector_intraday:XLC:30m'").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM market_files WHERE interval='30m'").fetchone()[0] == 1
+    assert legacy.is_file()
+    inventory = client.get('/api/database').json()
+    assert {row['interval'] for row in inventory['market']} == {'1h'}
+    assert {item['dataset'] for item in inventory['imports']} == {'SPY 1h'}
+    assert client.get('/api/bars?symbol=SPY&interval=1h').json()['bars'][0]['close'] == 101
+    assert client.get('/api/bars?interval=30m').status_code == 422
+    assert client.get('/api/market/quality?symbol=SPY&interval=30m').status_code == 422
+    response = mutate(client, 'POST', '/api/import/bars',
+                      data={'symbol': 'SPY', 'interval': '30m', 'source': 'Legacy fixture', 'adjustment': 'unverified'},
+                      files={'file': ('bars.csv', 'time,open,high,low,close,volume\n', 'text/csv')})
+    assert response.status_code == 422
 
 
 def test_importing_application_module_does_not_create_user_data(tmp_path):

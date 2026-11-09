@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, ColorType, CrosshairMode, Time } from 'lightweight-charts';
 import { ArrowDownUp, BarChart3, Check, ChevronDown, LineChart, Search } from 'lucide-react';
-import { api, money, pct, useApp, useResource } from '../api';
+import { api, money, pagesBuild, pct, useApp, useResource } from '../api';
 import { Empty, ErrorNote, Segmented, Tip } from '../ui';
 
 const COLORS = ['#a6d68a','#dfb76e','#89b9c7','#d295a1','#bb9cce','#d8cf8a','#87c6a4','#df9579','#9bafe4','#d5a4cb','#8fb9a5'];
@@ -78,6 +78,7 @@ function PriceChart({ bars, comparisons, mode, chartType, volume, interval, ligh
 
 export default function Charts() {
   const { state, refresh, marketVersions, theme } = useApp();
+  const viewer = pagesBuild || state?.access_scope === 'remote';
   const [interval, setInterval] = useState('1d');
   const [chartType, setChartType] = useState('candles');
   const [mode, setMode] = useState<ChartMode>('market');
@@ -160,7 +161,7 @@ export default function Charts() {
       if (comparisonEpoch.current !== epoch || interval === '1d') return;
       const missing = results.filter(result => result && result.bars.length === 0 && requestSequence.current[result.key] === result.sequence).map(result => result!.symbol);
       if (!missing.length) return;
-      if (state?.access_scope !== 'local') { setComparisonMessage('Refresh missing sector history from the local workspace.'); return; }
+      if (state?.access_scope !== 'local') return;
       api('/market/sector-history', { method: 'POST', body: JSON.stringify({ interval, symbols: missing }) })
         .then(result => { if (comparisonEpoch.current === epoch && result.retrying?.length) setComparisonMessage(`Retrying unavailable series: ${result.retrying.join(', ')}.`); })
         .catch(error => { if (comparisonEpoch.current === epoch) setComparisonMessage(error.message); });
@@ -206,15 +207,17 @@ export default function Charts() {
   function toggle(symbol: string) { setSelected(current => current.includes(symbol) ? current.filter(x => x !== symbol) : [...current, symbol]); }
   async function saveTop() { const n = Math.max(1, Math.min(10, Number(topN) || 10)); setTopN(String(n)); if (state?.access_scope !== 'local' || n === state?.settings?.top_n) return; try { await api('/settings', { method: 'PATCH', body: JSON.stringify({ top_n: n }) }); refresh(); } catch(e: any) { setMessage(e.message); } }
   async function calculate(e: React.FormEvent) { e.preventDefault(); try { setAttribution(await api(`/attribution?${new URLSearchParams({start,end,sector: expanded,limit:topN})}`)); setMessage(''); } catch(e: any) { setMessage(e.message); } }
+  const feedback = error || performanceError || message;
+  const missingComparisons = compare.filter(series => !series.bars.length).map(series => series.symbol);
   return <>
-    <div className="page-heading"><div><div className="page-kicker"><span className="kicker-line"/> MARKET INTELLIGENCE</div><h1>Charts<span className="heading-period">.</span></h1><p className="page-subtitle">See the market from a wider perspective.</p></div><div className="market-tag"><span className="status-dot"/> SPY · S&P 500 ETF</div></div>
-    <ErrorNote text={error || performanceError || message}/>
+    <div className="page-heading"><div>{!viewer && <div className="page-kicker"><span className="kicker-line"/> MARKET INTELLIGENCE</div>}<h1>Charts<span className="heading-period">.</span></h1>{!viewer && <p className="page-subtitle">See the market from a wider perspective.</p>}</div>{!viewer && <div className="market-tag"><span className="status-dot"/> SPY · S&P 500 ETF</div>}</div>
+    <ErrorNote text={viewer && feedback ? 'Data temporarily unavailable.' : feedback}/>
     <section className="panel chart-panel">
       <div className="chart-heading">
         <div>
           <div className="eyebrow">
             {ranked ? 'PERIOD PERFORMANCE' : 'MARKET OVERVIEW'}
-            <Tip text="Daily market data comes from Tradier. Intraday comes from Yahoo Finance via yfinance. Coverage and adjustment status appear below."/>
+            {!viewer && <Tip text="Daily market data comes from Tradier. Hourly data comes from Yahoo Finance via yfinance."/>}
           </div>
           <div className="chart-symbol">
             <h2>{ranked
@@ -274,8 +277,7 @@ export default function Charts() {
           <span className="muted tiny">Indexed to the first session close</span>
         </> : <>
           <div className="toolbar-group">
-            <Segmented values={[{value:'1d',label:'Daily'},{value:'1h',label:'1 hour'},
-              {value:'30m',label:'30 min'}]} value={interval} onChange={setInterval}/>
+            <Segmented values={[{value:'1d',label:'Daily'},{value:'1h',label:'Hourly'}]} value={interval} onChange={setInterval}/>
             <span className="toolbar-separator"/>
             <button className={`chart-tool ${chartType === 'candles' ? 'on' : ''}`} onClick={() => setChartType('candles')}
               disabled={mode === 'sectors'} title="Candlesticks" aria-label="Candlesticks" aria-pressed={chartType === 'candles'}><BarChart3 size={16}/></button>
@@ -284,28 +286,29 @@ export default function Charts() {
             <button className={`chart-tool volume-toggle ${volume ? 'on' : ''}`} disabled={mode === 'sectors'}
               onClick={() => setVolume(value => !value)} aria-pressed={volume}>Volume</button>
           </div>
-          <span className="muted tiny">{mode === 'sectors' ? 'Indexed to first common available close' : 'Drag to pan · scroll to zoom'}</span>
+          {mode === 'sectors' ? <span className="muted tiny">Indexed to first common close</span> : !viewer && <span className="muted tiny">Drag to pan · scroll to zoom</span>}
         </>}
       </div>
       {bars.length ? <PriceChart bars={bars} comparisons={chartComparisons} mode={mode} chartType={chartType}
         volume={volume} interval={ranked ? '1d' : interval} light={light} rankingStart={ranked ? performance?.start : undefined}/>
         : <div className="chart-empty"><Empty
           title={ranked ? (performance ? 'No comparable period data' : performanceError ? 'Performance unavailable' : 'Loading performance') : 'Waiting for market data'}
-          description={ranked ? performance?.message || performanceError || 'Reading stored daily closes for the selected period.'
+          description={viewer ? undefined : ranked ? performance?.message || performanceError || 'Reading stored daily closes for the selected period.'
             : 'Refresh stored market data from the local workspace. Missing history remains blank.'}/></div>}
-      {!ranked && (mode === 'market' || mode === 'etfs') && bars.length > 0 && <div className="history-controls">
-        <span className="muted tiny">{bars.length.toLocaleString()} of {data?.coverage?.row_count?.toLocaleString() || '—'} stored {chartSymbol} bars loaded</span>
+      {!ranked && (mode === 'market' || mode === 'etfs') && bars.length > 0 && (!viewer || hasOlder) && <div className="history-controls">
+        {!viewer && <span className="muted tiny">{bars.length.toLocaleString()} of {data?.coverage?.row_count?.toLocaleString() || '—'} stored {chartSymbol} bars loaded</span>}
         {hasOlder && <button className="button secondary" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? 'Loading earlier bars…' : 'Load earlier bars'}</button>}
       </div>}
-      {!ranked && <div className="coverage-note">
-        <span><span className="status-dot"/> {data?.coverage ? `${data.coverage.source} · ${data.coverage.coverage_start} to ${data.coverage.coverage_end}` : 'No data imported'}</span>
+      {!ranked && (!viewer || data?.coverage) && <div className="coverage-note">
+        <span>{data?.coverage ? `${viewer ? '' : data.coverage.source + ' · '}${data.coverage.coverage_start} to ${data.coverage.coverage_end}` : 'No coverage available'}</span>
         <span>{data?.coverage?.adjustment === 'split_dividend_adjusted' ? 'Provider-declared adjusted' : 'Adjustments unverified'}
-          <Tip text="The stored date range can contain gaps. Tradier daily prices may lack dividend adjustments, and Yahoo limits intraday history."/>
+          <Tip text={viewer ? 'The displayed date range may contain gaps.' : 'The stored date range can contain gaps. Tradier daily prices may lack dividend adjustments, and Yahoo limits hourly history.'}/>
         </span>
       </div>}
       {ranked && performance?.rows?.length > 0 && <div className="period-results">
         <p className="panel-caption">
-          {performance.start} to {performance.end} · {performance.complete ? 'Comparable endpoints available' : 'Partial coverage'}. {performance.message}
+          {performance.start} to {performance.end}{!performance.complete && ' · Partial coverage'}
+          {viewer ? (performance.basis === 'unverified' ? ' · Adjustments unverified' : ' · Provider-declared adjusted') : `. ${performance.message}`}
         </p>
         <div className="table-wrap">
           <table>
@@ -321,11 +324,16 @@ export default function Charts() {
           </table>
         </div>
       </div>}
-      {!ranked && mode === 'sectors' && <div className="sector-picker"><div className="sector-picker-top"><div><strong>Compare sector ETFs</strong><small>Normalized price change · ETF data must match the selected interval</small></div><button className="text-link" onClick={() => setSelected(selected.length === sectors.length ? [] : sectors.map((s: any) => s.symbol))}>{selected.length === sectors.length ? 'Clear all' : 'Select all'}</button></div><div className="sector-checks">{sectors.map((s: any, i: number) => <label key={s.symbol}><input type="checkbox" checked={selected.includes(s.symbol)} onChange={() => toggle(s.symbol)}/><span className="legend-dot" style={{background: palette[i]}}/><span>{s.name}</span><small>{s.symbol}</small></label>)}</div>{compare.some(c => !c.bars.length) && <div className="muted tiny">No {interval} data yet for: {compare.filter(c => !c.bars.length).map(c => c.symbol).join(', ')}. {interval !== '1d' ? 'The background worker will request available Yahoo history.' : ''}</div>}{comparisonMessage && <div className="muted tiny" role="status">{comparisonMessage}</div>}</div>}
+      {!ranked && mode === 'sectors' && <div className="sector-picker">
+        <div className="sector-picker-top"><div><strong>Compare sector ETFs</strong>{!viewer && <small>Normalized price change · ETF data must match the selected interval</small>}</div><button className="text-link" onClick={() => setSelected(selected.length === sectors.length ? [] : sectors.map((s: any) => s.symbol))}>{selected.length === sectors.length ? 'Clear all' : 'Select all'}</button></div>
+        <div className="sector-checks">{sectors.map((s: any, i: number) => <label key={s.symbol}><input type="checkbox" checked={selected.includes(s.symbol)} onChange={() => toggle(s.symbol)}/><span className="legend-dot" style={{background: palette[i]}}/><span>{s.name}</span><small>{s.symbol}</small></label>)}</div>
+        {missingComparisons.length > 0 && <div className="muted tiny">{interval === '1h' ? 'Hourly' : 'Daily'} data unavailable for {missingComparisons.join(', ')}.</div>}
+        {comparisonMessage && <div className="muted tiny" role="status">{comparisonMessage}</div>}
+      </div>}
     </section>
-    <section className="panel sector-panel"><div className="section-title"><div><div className="eyebrow">BENEATH THE SURFACE</div><h2>Sector trends</h2><p className="muted small">Explore sector ETFs and their strongest cached daily movers.</p></div><div className="sector-controls"><div className="searchbox small-search"><Search size={15}/><input placeholder="Search sectors" aria-label="Search sectors" value={search} onChange={e => setSearch(e.target.value)}/></div><label className="top-label">Top <input type="number" min="1" max="10" aria-label="Top N stocks" value={topN} onChange={e => setTopN(e.target.value)} onBlur={saveTop}/> stocks</label></div></div>
-      <div className="sector-list">{trends?.rows?.map((row: any, i: number) => <div key={row.symbol}><button className="sector-row" onClick={() => { setExpanded(expanded === row.name ? '' : row.name); setAttribution(null); }} aria-expanded={expanded === row.name}><span className="sector-index">{String(i+1).padStart(2,'0')}</span><span className="sector-name"><strong>{row.name}</strong><small>{row.symbol} · tradable ETF</small></span><span className="sector-classified">{row.classified_count} quoted stocks</span><span>{money(row.quote?.price)}</span><span className={row.quote?.change_pct == null ? 'muted' : row.quote.change_pct >= 0 ? 'positive' : 'negative'}>{pct(row.quote?.change_pct)}</span><ChevronDown className={expanded === row.name ? 'rotate' : ''} size={16}/></button>{expanded === row.name && <div className="sector-detail"><div className="detail-title">TOP STOCKS BY DAY CHANGE <Tip text="Sector membership is inferred from same-date sector ETF holdings. Missing quotes and unclassified stocks are excluded."/></div>{row.top.length ? <div className="top-stock-grid">{row.top.map((s: any) => <div key={s.symbol}><strong>{s.symbol}</strong><span>{s.name}</span><b className={s.change_pct >= 0 ? 'positive' : 'negative'}>{pct(s.change_pct)}</b></div>)}</div> : <p className="muted small">No classified stock quotes available.</p>}</div>}</div>)}</div><p className="panel-caption">{trends?.note}</p>
+    <section className="panel sector-panel"><div className="section-title"><div><div className="eyebrow">BENEATH THE SURFACE</div><h2>Sector trends</h2>{!viewer && <p className="muted small">Explore sector ETFs and their strongest cached daily movers.</p>}</div><div className="sector-controls"><div className="searchbox small-search"><Search size={15}/><input placeholder="Search sectors" aria-label="Search sectors" value={search} onChange={e => setSearch(e.target.value)}/></div><label className="top-label">Top <input type="number" min="1" max="10" aria-label="Top N stocks" value={topN} onChange={e => setTopN(e.target.value)} onBlur={saveTop}/> stocks</label></div></div>
+      <div className="sector-list">{trends?.rows?.map((row: any, i: number) => <div key={row.symbol}><button className="sector-row" onClick={() => { setExpanded(expanded === row.name ? '' : row.name); setAttribution(null); }} aria-expanded={expanded === row.name}><span className="sector-index">{String(i+1).padStart(2,'0')}</span><span className="sector-name"><strong>{row.name}</strong><small>{row.symbol} · tradable ETF</small></span><span className="sector-classified">{row.classified_count} quoted stocks</span><span>{money(row.quote?.price)}</span><span className={row.quote?.change_pct == null ? 'muted' : row.quote.change_pct >= 0 ? 'positive' : 'negative'}>{pct(row.quote?.change_pct)}</span><ChevronDown className={expanded === row.name ? 'rotate' : ''} size={16}/></button>{expanded === row.name && <div className="sector-detail"><div className="detail-title">TOP STOCKS BY DAY CHANGE <Tip text="Sector membership is inferred from same-date sector ETF holdings. Missing quotes and unclassified stocks are excluded."/></div>{row.top.length ? <div className="top-stock-grid">{row.top.map((s: any) => <div key={s.symbol}><strong>{s.symbol}</strong><span>{s.name}</span><b className={s.change_pct >= 0 ? 'positive' : 'negative'}>{pct(s.change_pct)}</b></div>)}</div> : <p className="muted small">No classified stock quotes available.</p>}</div>}</div>)}</div>{!viewer && <p className="panel-caption">{trends?.note}</p>}
     </section>
-    <section className="panel attribution-panel"><div className="section-title"><div><div className="eyebrow">HISTORICAL ATTRIBUTION</div><h2>Return contributors <Tip text="Requires an exact start-date holdings snapshot with weights and provider-declared split- and dividend-adjusted closes at both endpoints. Missing constituents are reported, not estimated."/></h2><p className="muted small">Select a sector above, then choose exact start and end dates.</p></div></div><form className="attribution-form" onSubmit={calculate}><label>From<input type="date" required value={start} onChange={e => setStart(e.target.value)}/></label><label>To<input type="date" required value={end} onChange={e => setEnd(e.target.value)}/></label><div className="attribution-sector"><span>SECTOR</span><strong>{expanded || 'All sectors'}</strong></div><button className="button secondary" type="submit"><ArrowDownUp size={15}/> Calculate</button></form>{attribution && <><div className="notice">{attribution.message} {attribution.eligible != null && `${attribution.missing} of ${attribution.eligible} constituents missing.`}</div>{attribution.rows?.length > 0 && <div className="table-wrap"><table><thead><tr><th>STOCK</th><th>SECTOR</th><th>START WEIGHT</th><th>RETURN</th><th>CONTRIBUTION</th></tr></thead><tbody>{attribution.rows.map((r: any) => <tr key={r.symbol}><td><strong>{r.symbol}</strong></td><td>{r.sector}</td><td>{(r.weight*100).toFixed(2)}%</td><td>{pct(r.return*100)}</td><td>{pct(r.contribution*100)}</td></tr>)}</tbody></table></div>}</>}</section>
+    <section className="panel attribution-panel"><div className="section-title"><div><div className="eyebrow">HISTORICAL ATTRIBUTION</div><h2>Return contributors <Tip text="Requires an exact start-date holdings snapshot with weights and provider-declared split- and dividend-adjusted closes at both endpoints. Missing constituents are reported, not estimated."/></h2>{!viewer && <p className="muted small">Select a sector above, then choose exact start and end dates.</p>}</div></div><form className="attribution-form" onSubmit={calculate}><label>From<input type="date" required value={start} onChange={e => setStart(e.target.value)}/></label><label>To<input type="date" required value={end} onChange={e => setEnd(e.target.value)}/></label><div className="attribution-sector"><span>SECTOR</span><strong>{expanded || 'All sectors'}</strong></div><button className="button secondary" type="submit"><ArrowDownUp size={15}/> Calculate</button></form>{attribution && <><div className="notice">{attribution.message} {attribution.eligible != null && `${attribution.missing} of ${attribution.eligible} constituents missing.`}</div>{attribution.rows?.length > 0 && <div className="table-wrap"><table><thead><tr><th>STOCK</th><th>SECTOR</th><th>START WEIGHT</th><th>RETURN</th><th>CONTRIBUTION</th></tr></thead><tbody>{attribution.rows.map((r: any) => <tr key={r.symbol}><td><strong>{r.symbol}</strong></td><td>{r.sector}</td><td>{(r.weight*100).toFixed(2)}%</td><td>{pct(r.return*100)}</td><td>{pct(r.contribution*100)}</td></tr>)}</tbody></table></div>}</>}</section>
   </>;
 }

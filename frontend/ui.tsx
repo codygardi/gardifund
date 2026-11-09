@@ -7,8 +7,8 @@ export function Tip({ text }: { text: string }) {
 export function SectionTitle({ title, eyebrow, action }: { title: string; eyebrow?: string; action?: React.ReactNode }) {
   return <div className="section-title"><div>{eyebrow && <div className="eyebrow">{eyebrow}</div>}<h2>{title}</h2></div>{action}</div>;
 }
-export function Empty({ title, description, action }: { title: string; description: string; action?: React.ReactNode }) {
-  return <div className="empty"><div className="empty-icon"><ArrowUpRight size={19}/></div><strong>{title}</strong><p>{description}</p>{action}</div>;
+export function Empty({ title, description, action }: { title: string; description?: string; action?: React.ReactNode }) {
+  return <div className="empty"><div className="empty-icon"><ArrowUpRight size={19}/></div><strong>{title}</strong>{description && <p>{description}</p>}{action}</div>;
 }
 export function Loading() { return <div className="loading"><LoaderCircle className="spin" size={19}/> Loading workspace</div>; }
 export function ErrorNote({ text }: { text?: string }) { return text ? <div className="error" role="alert">{text}</div> : null; }

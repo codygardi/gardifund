@@ -155,7 +155,7 @@ class Worker:
             return f"Scanned {result['requested']} SPY-related symbols; {result['quoted']} had a usable last price"
         if name.startswith("sector_intraday:"):
             parts = name.split(":")
-            if len(parts) != 3 or parts[1] not in {symbol for symbol, _ in SECTORS} or parts[2] not in {"1h", "30m"}:
+            if len(parts) != 3 or parts[1] not in {symbol for symbol, _ in SECTORS} or parts[2] != "1h":
                 raise ValueError("Unknown sector history job")
             if self.stop_event.is_set():
                 raise ValueError("Interrupted; will retry after restart")
@@ -175,16 +175,15 @@ class Worker:
                         count += 1
                 except Exception:
                     errors.append(symbol + " daily")
-            for interval in ("1h", "30m"):
-                self.checkpoint()
-                try:
-                    result = self.market.refresh_yahoo("SPY", interval)
-                    if result is None:
-                        kept += 1
-                    else:
-                        count += 1
-                except Exception:
-                    errors.append("SPY " + interval)
+            self.checkpoint()
+            try:
+                result = self.market.refresh_yahoo("SPY", "1h")
+                if result is None:
+                    kept += 1
+                else:
+                    count += 1
+            except Exception:
+                errors.append("SPY hourly")
             message = f"Updated {count} series"
             if kept:
                 message += f"; kept {kept} imported series"
