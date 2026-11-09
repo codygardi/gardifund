@@ -96,7 +96,7 @@ function Shell() {
     </header>
     <main className="content" id="main-content">
       <Suspense fallback={<Loading/>}>
-        {page === 'overview' && <Overview navigate={navigate}/>}
+        {page === 'overview' && <Overview/>}
         {local && Investing && page === 'investing' && <Investing view={investingView} onPositions={() => setInvestingView('positions')}/>}
         {page === 'charts' && <Charts/>}
         {local && Data && page === 'database' && <Data/>}

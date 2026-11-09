@@ -1,4 +1,5 @@
 """Cross-runtime gateway/ASGI integration; no Cloudflare account or provider calls."""
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ import socket
 import subprocess
 import threading
 import time
+from uuid import uuid4
 import uvicorn
 
 from backend.config import Settings
@@ -18,12 +20,22 @@ def test_public_gateway_is_read_only_and_forwards_live_sse(tmp_path):
     node = shutil.which('node')
     assert node, 'Node.js is required for the cross-runtime gateway integration test'
     class Broker:
+        now = datetime.fromisoformat('2024-01-31T15:00:00+00:00').timestamp()
+
         def accounts(self):
             return [{'account_id': 'SYNTHETIC-PRIVATE-ID',
                      'balance': {'total_equity': 1000, 'total_cash': 800},
                      'positions': [{'symbol': 'AAA', 'quantity': 2, 'cost_basis': 180,
                                     'account_number': 'SYNTHETIC-PRIVATE-ID', 'note': 'SYNTHETIC-PRIVATE-NOTE'}],
-                     'orders': []}]
+                     'orders': [{'symbol': 'AAA', 'quantity': 2, 'side': 'buy', 'status': 'filled'}]}]
+
+        def market_clock(self):
+            return {'state': 'open'}
+
+        def quotes(self, symbols):
+            stamp = int(self.now * 1000)
+            return [{'symbol': symbol, 'type': 'etf', 'last': 100, 'bid': 99, 'ask': 101,
+                     'trade_date': stamp, 'bid_date': stamp, 'ask_date': stamp} for symbol in symbols]
 
     sockets = [socket.create_server(('127.0.0.1', 0)) for _ in range(2)]
     for sock in sockets:
@@ -33,8 +45,10 @@ def test_public_gateway_is_read_only_and_forwards_live_sse(tmp_path):
                         GARDIFUND_AUTH_MODE='public', GARDIFUND_START_WORKER=False,
                         GARDIFUND_LOCAL_PORT=local_port, GARDIFUND_REMOTE_PORT=remote_port,
                         PRODUCTION_API_KEY='', SETUPS_PASSWORD_HASH='', GARDIFUND_SHARE_POSITION_DETAILS=True)
-    app = create_app(settings, adapter=Broker())
-    sync_accounts(app.state.db, Broker())
+    broker = Broker()
+    app = create_app(settings, adapter=broker)
+    app.state.worker.execution.clock = lambda: broker.now
+    sync_accounts(app.state.db, broker)
     first_bar = {'time': '2024-01-02', 'open': 100, 'high': 104, 'low': 99, 'close': 101, 'volume': 1000}
     app.state.market.write('SPY', '1d', [first_bar], 'SYNTHETIC-PRIVATE-SOURCE', 'unverified')
     with app.state.db.connect() as conn:
@@ -63,6 +77,7 @@ def test_public_gateway_is_read_only_and_forwards_live_sse(tmp_path):
                 conn.execute('UPDATE live_accounts SET payload=?', (json.dumps(payload),))
                 app.state.db.event('overview', 'account_synced', conn,
                                    {'account_id': 'SYNTHETIC-PRIVATE-ID', 'note': 'SYNTHETIC-PRIVATE-NOTE'})
+            app.state.worker.execution.submit('SPY', 'buy', 2, 'etf', str(uuid4()))
         except Exception as exc:
             update_errors.append(type(exc).__name__)
 

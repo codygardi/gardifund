@@ -21,7 +21,7 @@ test('the Pages artifact is relative, read-only, and contains only static browse
     const assets = await readdir(join(output, 'assets'));
     assert.ok(assets.some(name => name.startsWith('Charts-')));
     assert.ok(assets.some(name => name.startsWith('Overview-')));
-    assert.ok(assets.every(name => /\.(js|css)$/.test(name) && !/^(Investing|Settings|Data|ShadowReset)-/.test(name)));
+    assert.ok(assets.every(name => /\.(js|css)$/.test(name) && !/^(Investing|Settings|Data|ShadowReset|OverviewDetails)-/.test(name)));
     const js = (await Promise.all(assets.filter(name => name.endsWith('.js'))
       .map(name => readFile(join(output, 'assets', name), 'utf8')))).join('\n');
     assert.match(js, /Contact the admin to start the GARDiFUND server/);

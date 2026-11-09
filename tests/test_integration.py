@@ -223,6 +223,12 @@ def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkey
             for response in (live, simulated):
                 assert {'positions', 'orders'}.isdisjoint(response.json())
                 assert all(symbol not in response.text for symbol in ('AAPL', 'MSFT', 'QQQ'))
+        for mode, remote_summary in (('live', live), ('shadow', simulated)):
+            local_summary = client.get(f'http://localhost:{settings.local_port}/api/overview/summary?mode={mode}')
+            assert local_summary.status_code == 200
+            assert local_summary.json() == {
+                key: value for key, value in remote_summary.json().items() if key not in {'positions', 'orders'}
+            }
         portfolio = client.get('/view/positions', headers=auth)
         assert portfolio.status_code == 403
         for path in ('/view/discovery','/view/database','/view/market/quality?symbol=SPY','/view/settings','/view/setup-access','/view/positions'):

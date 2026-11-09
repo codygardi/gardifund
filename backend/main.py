@@ -528,11 +528,13 @@ def create_app(settings: Settings | None = None, adapter=None):
     async def view_events(request: Request):
         return await events(request)
 
+    @app.get("/api/overview/summary")
     @app.get("/view/overview", include_in_schema=False)
-    def view_overview(mode: Literal["live", "shadow"] = "live"):
+    def view_overview(request: Request, mode: Literal["live", "shadow"] = "live"):
         raw = overview(mode)
         def shared_details(orders):
-            if settings.auth_mode != "cloudflare" or not settings.share_position_details:
+            if (request.state.access_scope != "remote" or settings.auth_mode != "cloudflare"
+                    or not settings.share_position_details):
                 return {}
             text_fields = {'symbol', 'side', 'status', 'create_date', 'order_type'}
             numeric_fields = {'created', 'quantity', 'price_cents', 'fill_price', 'avg_fill_price', 'price', 'limit_price'}

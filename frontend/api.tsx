@@ -133,7 +133,7 @@ export function useResource(path: string | null) {
     const query = new URLSearchParams(path?.split('?')[1]);
     version = marketVersions[`${query.get('symbol') || 'SPY'}:${query.get('interval') || '1d'}`] || 0;
   } else {
-    const modules = name === '/overview' || name === '/positions' ? ['overview','investing']
+    const modules = name === '/overview' || name === '/overview/summary' || name === '/positions' ? ['overview','investing']
       : name === '/chart-performance' ? ['charts','database'] : name === '/sectors' ? ['investing','overview','charts']
       : name === '/setup-access' ? [] : ['database','settings','charts'];
     version = modules.reduce((sum,key) => sum + (resourceVersions[key] || 0),0);

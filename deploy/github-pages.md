@@ -1,6 +1,6 @@
 # Public dashboard on GitHub Pages
 
-Visitors open [GARDiFUND](https://codygardi.github.io/gardifund/) in their browser. The page displays Overview, Charts, and the Back Test placeholder. Overview shares aggregate Live and Shadow metrics. The page asks visitors to contact the admin when the Windows app is offline, and reconnects when it becomes available.
+Visitors open [GARDiFUND](https://codygardi.github.io/gardifund/) in their browser. The page displays Overview, Charts, and the Back Test placeholder. Both Overviews show the same Live and Shadow balances, performance, and position and order counts. Individual positions and orders can be opened in the Windows workspace. The page asks visitors to contact the admin when the Windows app is offline, and reconnects when it becomes available.
 
 The Windows app serves the full workspace on `127.0.0.1:8765` and public read-only views on `127.0.0.1:8766`. The Worker has a fixed private Tunnel connection to port 8766. Both the Worker and the viewing listener deny controls and writes. The Pages artifact contains static UI assets. It fetches the public projections and SSE updates at runtime.
 

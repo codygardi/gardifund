@@ -23,6 +23,12 @@ function view(path, method = 'GET', env = remote) {
   }), env);
 }
 
+async function localSummary(mode) {
+  const response = await fetch(`${QA_LOCAL_ORIGIN}/api/overview/summary?mode=${mode}`);
+  assert.equal(response.status, 200);
+  return response.json();
+}
+
 const scope = await view('/view/state');
 assert.equal(scope.status, 200);
 assert.equal(scope.headers.get('Access-Control-Allow-Origin'), 'https://codygardi.github.io');
@@ -30,13 +36,19 @@ assert.equal((await scope.json()).access_scope, 'remote');
 const overview = await view('/view/overview?mode=live');
 assert.equal(overview.status, 200);
 const first = await overview.text();
-assert.equal(JSON.parse(first).summary.equity, 1000);
-assert.equal(JSON.parse(first).summary.open_positions, 1);
+const liveInitial = JSON.parse(first);
+assert.equal(liveInitial.summary.equity, 1000);
+assert.equal(liveInitial.summary.open_positions, 1);
+assert.equal(liveInitial.summary.order_count, 1);
+assert.deepEqual(await localSummary('live'), liveInitial);
 assert.doesNotMatch(first, /AAA|SYNTHETIC-PRIVATE-ID|SYNTHETIC-PRIVATE-NOTE|never-forward/);
 assert.equal(overview.headers.get('Cache-Control'), 'no-store');
 const shadow = await view('/view/overview?mode=shadow');
 assert.equal(shadow.status, 200);
-assert.equal((await shadow.json()).summary.initial, 10000);
+const shadowInitial = await shadow.json();
+assert.equal(shadowInitial.summary.initial, 10000);
+assert.equal(shadowInitial.summary.order_count, 0);
+assert.deepEqual(await localSummary('shadow'), shadowInitial);
 const market = await view('/view/bars?symbol=SPY&interval=1d');
 assert.equal(market.status, 200);
 const firstBars = await market.text();
@@ -49,11 +61,11 @@ const wrongDestination = await view('/view/state', 'GET', binding(QA_LOCAL_ORIGI
 assert.equal(wrongDestination.status, 403);
 await wrongDestination.body?.cancel();
 const beforeDenials = calls;
-for (const [method, path] of [['GET', '/api/state'], ['POST', '/api/shadow/reset'], ['GET', '/view/database']]) {
+for (const [method, path] of [['GET', '/api/state'], ['GET', '/api/overview/summary'], ['POST', '/api/shadow/reset'], ['GET', '/view/database']]) {
   assert.equal((await view(path, method)).status, 403);
 }
 assert.equal(calls, beforeDenials, 'Forbidden requests must not reach the Windows server');
-for (const path of ['/', '/assets/Settings-private.js', '/api/state', '/view/database']) {
+for (const path of ['/', '/assets/Settings-private.js', '/api/state', '/api/overview/summary', '/view/database']) {
   const response = await fetch(QA_REMOTE_ORIGIN + path);
   assert.equal(response.status, 403, 'The public listener must also reject non-view routes');
   await response.body?.cancel();
@@ -66,17 +78,21 @@ const reader = stream.body.getReader();
 const decoder = new TextDecoder();
 let text = '';
 try {
-  const readEvents = () => text.split('\n\n').slice(0, -1).flatMap(frame => frame.split('\n').filter(line => line.startsWith('data: ')));
-  while (readEvents().length < 2) {
+  const readEvents = () => text.split('\n\n').slice(0, -1)
+    .flatMap(frame => frame.split('\n').filter(line => line.startsWith('data: ')))
+    .map(line => JSON.parse(line.slice(6)));
+  let events = [];
+  while (events.filter(event => event.module === 'overview').length < 2 || !events.some(event => event.module === 'charts')) {
     const item = await reader.read();
     assert.equal(item.done, false, 'The real event stream ended before the update');
     text += decoder.decode(item.value, { stream: true });
     assert.ok(text.length < 16384);
+    events = readEvents();
   }
-  const events = readEvents().map(line => JSON.parse(line.slice(6)));
-  const overviewEvent = events.find(event => event.module === 'overview');
-  assert.equal(overviewEvent.action, 'updated');
-  assert.equal(overviewEvent.payload, null);
+  for (const event of events.filter(event => event.module === 'overview')) {
+    assert.equal(event.action, 'updated');
+    assert.equal(event.payload, null);
+  }
   const marketEvent = events.find(event => event.module === 'charts');
   assert.equal(marketEvent.action, 'market_updated');
   assert.deepEqual(marketEvent.payload, { symbol: 'SPY', interval: '1d' });
@@ -86,7 +102,16 @@ try {
 }
 const updated = await view('/view/overview?mode=live');
 assert.equal(updated.status, 200);
-assert.equal((await updated.json()).summary.equity, 1234);
+const liveUpdated = await updated.json();
+assert.equal(liveUpdated.summary.equity, 1234);
+assert.deepEqual(await localSummary('live'), liveUpdated);
+const shadowResponse = await view('/view/overview?mode=shadow');
+assert.equal(shadowResponse.status, 200);
+const shadowUpdated = await shadowResponse.json();
+assert.equal(shadowUpdated.summary.open_positions, 1);
+assert.equal(shadowUpdated.summary.order_count, 1);
+assert.ok(!('positions' in shadowUpdated) && !('orders' in shadowUpdated));
+assert.deepEqual(await localSummary('shadow'), shadowUpdated);
 const ranking = await view('/view/chart-performance?mode=market&year=2024&month=1');
 assert.equal(ranking.status, 200);
 const rankingData = await ranking.json();
