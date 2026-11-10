@@ -25,7 +25,7 @@ type Coverage = { source: string; coverage_start: string; coverage_end: string; 
 type SectorWindows = {
   start: string | null; end: string | null; basis: string | null; message: string | null;
   ranked: number; missing: number; incompatible: number; possible_windows: number;
-  rows: (PerformanceRow & { window_count: number; window_start: string; window_end: string })[];
+  rows: (PerformanceRow & { profitable_window_pct: number; window_count: number; window_start: string; window_end: string })[];
 };
 const NO_COMPARISONS: ChartSeries[] = [];
 
@@ -282,7 +282,7 @@ function SnapshotAnalysis({ active, viewer }: { active: boolean; viewer: boolean
     <section className="panel chart-panel" aria-label="Rolling sector returns">
       <div className="eyebrow">ROLLING RETURNS</div>
       <div className="chart-symbol"><h2>Top sectors</h2>
-        <Tip text="Sector ETFs represent the sectors. Each window measures close to close, from the start date to the close the selected number of NYSE sessions later. The ranking averages all valid windows."/>
+        <Tip text="Sector ETFs represent the sectors. The ranking averages close-to-close returns across valid windows of the selected length. Profitable windows show the share of valid windows with a return above 0%."/>
       </div>
       <form className="chart-mode-controls sector-window-controls" onSubmit={event => {
         event.preventDefault();
@@ -305,11 +305,13 @@ function SnapshotAnalysis({ active, viewer }: { active: boolean; viewer: boolean
         {error ? <ErrorNote text={viewer ? 'Sector analysis is unavailable.' : error}/> : results?.rows.length ? <>
           <p className="muted small">{selection.days} trading days · {results.start} to {results.end} · {results.ranked} sector ETFs compared</p>
           <div className="table-wrap"><table aria-label="Sector ETF rankings">
-            <thead><tr><th scope="col">RANK</th><th scope="col">SECTOR ETF</th><th scope="col">AVERAGE RETURN</th><th scope="col">WINDOWS</th><th scope="col">SAMPLE DATES</th></tr></thead>
+            <thead><tr><th scope="col">RANK</th><th scope="col">SECTOR ETF</th><th scope="col">AVERAGE RETURN</th>
+              <th scope="col">PROFITABLE WINDOWS</th><th scope="col">WINDOWS</th><th scope="col">SAMPLE DATES</th></tr></thead>
             <tbody>{results.rows.map((row, index) => <tr key={row.symbol}>
               <td>{index + 1}</td>
               <td><strong>{row.name}</strong> <span className="ticker-label">{row.symbol}</span></td>
               <td className={row.return_pct >= 0 ? 'positive' : 'negative'}>{pct(row.return_pct)}</td>
+              <td>{Number.isFinite(row.profitable_window_pct) ? `${row.profitable_window_pct.toFixed(1)}%` : '—'}</td>
               <td>{row.window_count.toLocaleString()} / {results.possible_windows.toLocaleString()}</td>
               <td><time dateTime={row.window_start}>{row.window_start}</time> to <time dateTime={row.window_end}>{row.window_end}</time></td>
             </tr>)}</tbody>

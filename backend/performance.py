@@ -130,7 +130,9 @@ class PeriodPerformance:
                     first, last = first or previous, day
             if returns:
                 count = len(returns)
+                profitable_count = sum(value > 0 for value in returns)
                 groups[basis].append({**fund, "return_pct": fsum(value / count for value in returns),
+                                      "profitable_window_pct": 100 * profitable_count / count,
                                       "window_count": count, "window_start": first, "window_end": last})
 
         basis = ADJUSTED if len(groups[ADJUSTED]) >= len(groups[UNVERIFIED]) else UNVERIFIED

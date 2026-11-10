@@ -139,6 +139,7 @@ def test_sector_windows_rank_mean_returns_and_skip_gaps_and_unfinished_sessions(
     assert [row["symbol"] for row in ranked["rows"]] == ["XLK", "XLE", "XLP"]
     assert [row["return_pct"] for row in ranked["rows"]] == pytest.approx([10, 6.25, 4])
     assert [row["window_count"] for row in ranked["rows"]] == [4, 4, 1]
+    assert [row["profitable_window_pct"] for row in ranked["rows"]] == [100, 25, 100]
     assert (ranked["rows"][-1]["window_start"], ranked["rows"][-1]["window_end"]) == (sessions[2], sessions[4])
     assert performance.sector_windows(2, 1, 1)["rows"] == ranked["rows"][:1]
     assert len(performance.cache) == 1
