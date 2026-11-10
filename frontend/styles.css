@@ -144,6 +144,16 @@ label { display:flex; flex-direction:column; gap:7px; color:var(--muted); font-s
 .sector-window-results { margin-top:24px; padding-top:16px; border-top:1px solid var(--border); }
 .sector-window-results .table-wrap { margin-top:12px; }
 .sector-window-results :is(th,td):last-child { white-space:nowrap; }
+.trading-day-panel { margin-top:16px; }
+.trading-day-readout,.trading-day-readout ul,.trading-day-readout li { display:flex; align-items:center; gap:8px; }
+.trading-day-readout,.trading-day-readout ul { flex-wrap:wrap; column-gap:14px; }
+.trading-day-readout { margin-top:16px; font-size:11px; }
+.trading-day-readout ul { list-style:none; margin:0; padding:0; }
+.trading-day-readout li > span:last-child { color:var(--muted); font-variant-numeric:tabular-nums; }
+.trading-day-chart { width:100%; height:clamp(225px,35vh,340px); margin-top:12px; }
+.trading-day-axis { text-align:center; margin:3px 0 8px; }
+.trading-day-control { display:flex; flex-direction:row; align-items:center; gap:12px; flex-wrap:wrap; }
+.trading-day-control input { width:min(100%,220px); min-height:28px; padding:0; border:0; background:transparent; accent-color:var(--accent); }
 @media (max-width:700px) { .chart-heading { grid-template-columns:minmax(0,1fr); } }
 .chart-tools .panel-caption { margin-top:0; }
 .modal label { margin-top:16px; }

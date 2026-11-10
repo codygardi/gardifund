@@ -2,6 +2,7 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { createChart, ColorType, CrosshairMode, Time } from 'lightweight-charts';
 import { BarChart3, LineChart } from 'lucide-react';
 import { api, money, pagesBuild, pct, useApp, useResource } from '../api';
+import TradingDayChart, { type TradingDaySeries } from '../TradingDayChart';
 import { Empty, ErrorNote, Segmented, Tip } from '../ui';
 
 const COLORS = ['#a6d68a','#dfb76e','#89b9c7','#d295a1','#bb9cce','#d8cf8a','#87c6a4','#df9579','#9bafe4','#d5a4cb','#8fb9a5'];
@@ -25,6 +26,7 @@ type Coverage = { source: string; coverage_start: string; coverage_end: string; 
 type SectorWindows = {
   start: string | null; end: string | null; basis: string | null; message: string | null;
   ranked: number; missing: number; incompatible: number; possible_windows: number;
+  trading_days: number; series: TradingDaySeries[];
   rows: (PerformanceRow & { profitable_window_pct: number; window_count: number; window_start: string; window_end: string })[];
 };
 const NO_COMPARISONS: ChartSeries[] = [];
@@ -267,7 +269,7 @@ function MarketChart({ active, viewer, light, palette, sectors, fund, setFund, i
   </>;
 }
 
-function SnapshotAnalysis({ active, viewer }: { active: boolean; viewer: boolean }) {
+function SnapshotAnalysis({ active, viewer, light, palette }: ChartAppearance & { active: boolean }) {
   const maxYears = new Date().getFullYear() - FIRST_HISTORY_YEAR + 1;
   const [days, setDays] = useState('20');
   const [years, setYears] = useState(() => String(Math.min(maxYears, 16)));
@@ -278,7 +280,7 @@ function SnapshotAnalysis({ active, viewer }: { active: boolean; viewer: boolean
   const { data, error } = useResource(active ? `/chart-performance?${query}` : null);
   const results = data as SectorWindows | null;
   if (!active) return null;
-  return (
+  return <>
     <section className="panel chart-panel" aria-label="Rolling sector returns">
       <div className="eyebrow">ROLLING RETURNS</div>
       <div className="chart-symbol"><h2>Top sectors</h2>
@@ -325,7 +327,9 @@ function SnapshotAnalysis({ active, viewer }: { active: boolean; viewer: boolean
         </> : <Empty title={results ? 'No comparable windows' : 'Calculating sector returns'} description={results?.message ?? undefined}/>}
       </div>
     </section>
-  );
+    {results?.series?.length ? <TradingDayChart key={query.toString()} series={results.series}
+      days={results.trading_days} light={light} palette={palette}/> : null}
+  </>;
 }
 
 export default function Charts() {
@@ -371,7 +375,7 @@ export default function Charts() {
       <MarketChart active={tab === 'overview'} viewer={viewer} light={light} palette={palette} {...fundSelection}/>
     </div>
     <div role="tabpanel" id="snapshot-analysis" aria-labelledby="snapshot-tab-analysis" tabIndex={0} hidden={tab !== 'analysis'}>
-      <SnapshotAnalysis active={tab === 'analysis'} viewer={viewer}/>
+      <SnapshotAnalysis active={tab === 'analysis'} viewer={viewer} light={light} palette={palette}/>
     </div>
   </>;
 }

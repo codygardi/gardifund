@@ -7,6 +7,8 @@ from threading import RLock
 from typing import Literal
 import time
 
+import numpy as np
+
 from .db import SECTORS
 from .market import LOCK, MARKET_HISTORY_START, MARKET_TIMEZONE, nyse_session_hours
 
@@ -18,6 +20,22 @@ UNVERIFIED = "unverified"
 SPY = {"symbol": "SPY", "name": "SPDR S&P 500 ETF Trust", "sector": None}
 SECTOR_FUNDS = [{"symbol": symbol, "name": sector, "sector": sector} for symbol, sector in SECTORS]
 SECTOR_SYMBOLS = {fund["symbol"] for fund in SECTOR_FUNDS}
+
+
+def _average_return_by_day(closes, sessions, starts, trading_days, final_return):
+    """Use the same starting closes and complete windows for every offset."""
+    prices = np.array([closes.get(day, np.nan) for day in sessions], dtype=float)
+    indexes = np.asarray(starts, dtype=np.intp)
+    entries = prices[indexes]
+    curve = [0.0]
+    # Work one day at a time instead of allocating a windows-by-days matrix.
+    with np.errstate(over="ignore", invalid="ignore"):
+        for day in range(1, trading_days):
+            returns = (prices[indexes + day] / entries - 1) * 100
+            average = float(np.sum(returns / entries.size))
+            curve.append(average if isfinite(average) else None)
+    curve.append(final_return)
+    return curve
 
 
 class PeriodPerformance:
@@ -92,7 +110,7 @@ class PeriodPerformance:
                   "trading_days": trading_days, "lookback_years": lookback_years,
                   "possible_windows": max(0, len(sessions) - trading_days)}
         if not period["possible_windows"]:
-            return {**period, "rows": [], "basis": None, "ranked": 0, "missing": len(SECTOR_FUNDS), "incompatible": 0,
+            return {**period, "rows": [], "series": [], "basis": None, "ranked": 0, "missing": len(SECTOR_FUNDS), "incompatible": 0,
                     "message": f"{trading_days} trading days requires {trading_days + 1} completed sessions; "
                                f"{len(sessions)} fall within this lookback."}
         with self.lock, LOCK, self.db.connect() as conn:
@@ -101,20 +119,21 @@ class PeriodPerformance:
             ) if row["symbol"] in SECTOR_SYMBOLS)
             key = ("sector_windows", trading_days, lookback_years, period["start"], period["end"], generations)
             result = self._cached(key, lambda: self._rank_sector_windows(period, sessions, generations))
-            return {**result, "rows": result["rows"][:top_n]}
+            return {**result, "rows": result["rows"][:top_n], "series": result["series"][:top_n]}
 
     def _rank_sector_windows(self, period, sessions, generations):
         days = period["trading_days"]
         prices = self.market.daily_closes_between(SECTOR_SYMBOLS, sessions[0], sessions[-1])
         basis_by_symbol = {symbol: adjustment for symbol, _, adjustment in generations}
         groups = {ADJUSTED: [], UNVERIFIED: []}
+        starts_by_symbol = {}
         for fund in SECTOR_FUNDS:
             symbol = fund["symbol"]
             basis = basis_by_symbol.get(symbol)
             if basis not in groups:
                 continue
             closes = prices.get(symbol, {})
-            returns, streak, first, last = [], 0, None, None
+            returns, starts, streak, first, last = [], [], 0, None, None
             for index, day in enumerate(sessions):
                 close = closes.get(day)
                 if close is None or not isfinite(close) or close <= 0:
@@ -127,8 +146,10 @@ class PeriodPerformance:
                 change = (close / closes[previous] - 1) * 100
                 if isfinite(change):
                     returns.append(change)
+                    starts.append(index - days)
                     first, last = first or previous, day
             if returns:
+                starts_by_symbol[symbol] = starts
                 count = len(returns)
                 profitable_count = sum(value > 0 for value in returns)
                 groups[basis].append({**fund, "return_pct": fsum(value / count for value in returns),
@@ -137,8 +158,13 @@ class PeriodPerformance:
 
         basis = ADJUSTED if len(groups[ADJUSTED]) >= len(groups[UNVERIFIED]) else UNVERIFIED
         ranked = sorted(groups[basis], key=lambda row: (-row["return_pct"], row["symbol"]))
+        series = []
+        for row in ranked[:3]:
+            symbol = row["symbol"]
+            curve = _average_return_by_day(prices[symbol], sessions, starts_by_symbol[symbol], days, row["return_pct"])
+            series.append({"symbol": symbol, "return_pct_by_day": curve})
         incompatible = len(groups[UNVERIFIED if basis == ADJUSTED else ADJUSTED])
-        return {**period, "rows": ranked, "basis": basis if ranked else None, "ranked": len(ranked),
+        return {**period, "rows": ranked, "series": series, "basis": basis if ranked else None, "ranked": len(ranked),
                 "missing": len(SECTOR_FUNDS) - len(ranked) - incompatible, "incompatible": incompatible,
                 "message": None if ranked else "No sector ETF has enough consecutive daily closes for this window."}
 

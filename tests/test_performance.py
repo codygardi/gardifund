@@ -141,7 +141,12 @@ def test_sector_windows_rank_mean_returns_and_skip_gaps_and_unfinished_sessions(
     assert [row["window_count"] for row in ranked["rows"]] == [4, 4, 1]
     assert [row["profitable_window_pct"] for row in ranked["rows"]] == [100, 25, 100]
     assert (ranked["rows"][-1]["window_start"], ranked["rows"][-1]["window_end"]) == (sessions[2], sessions[4])
-    assert performance.sector_windows(2, 1, 1)["rows"] == ranked["rows"][:1]
+    assert [series["symbol"] for series in ranked["series"]] == ["XLK", "XLE", "XLP"]
+    for row, series, day_one in zip(ranked["rows"], ranked["series"], (5, 0, 6)):
+        assert series["return_pct_by_day"] == pytest.approx([0, day_one, row["return_pct"]])
+    top = performance.sector_windows(2, 1, 1)
+    assert top["rows"] == ranked["rows"][:1]
+    assert top["series"] == ranked["series"][:1]
     assert len(performance.cache) == 1
     daily(market, "XLE", {sessions[4]: 120})
     assert performance.sector_windows(2, 1, 1)["rows"][0]["symbol"] == "XLE"
@@ -151,7 +156,7 @@ def test_sector_window_bounds_and_leap_year_lookback(tmp_path):
     _, _, performance = workspace(tmp_path, "2024-02-29T16:00:00+00:00")
     trailing = performance.sector_windows(5000, 1, 1)
     assert trailing["start"] == "2023-02-28" and trailing["end"] == "2024-02-28"
-    assert trailing["rows"] == [] and trailing["possible_windows"] == 0
+    assert trailing["rows"] == [] and trailing["series"] == [] and trailing["possible_windows"] == 0
     retained = performance.sector_windows(5000, 15, 1)
     assert retained["start"] == "2010-01-04" and retained["end"] == "2024-02-28"
     with pytest.raises(ValueError):
