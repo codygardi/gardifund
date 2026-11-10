@@ -8,7 +8,6 @@ const COLORS = ['#a6d68a','#dfb76e','#89b9c7','#d295a1','#bb9cce','#d8cf8a','#87
 const LIGHT_COLORS = ['#387349','#9a6720','#327387','#a64d61','#75548a','#827520','#35785d','#a35439','#485e9a','#935482','#4d7564'];
 const EMPTY_BARS: any[] = [];
 const chartTime = (s: string): Time => (s.length === 10 ? s : Math.floor(new Date(s).getTime() / 1000)) as Time;
-const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const FIRST_HISTORY_YEAR = 2010;
 const MAX_WINDOW_DAYS = 5000;
 
@@ -18,13 +17,9 @@ const SNAPSHOT_TABS = [
 ] as const;
 
 type SnapshotTab = typeof SNAPSHOT_TABS[number]['id'];
-type RankingMode = 'market' | 'etfs';
-type PeriodView = 'history' | 'year' | 'month';
 type Interval = '1d' | '1h';
 type ChartSeries = { symbol: string; bars: any[]; color: string };
 type PerformanceRow = { symbol: string; name: string; return_pct: number };
-type Performance = { start: string | null; end: string | null; rows: PerformanceRow[];
-  series: Omit<ChartSeries, 'color'>[]; complete: boolean; basis: string | null; message: string };
 type Sector = { symbol: string; name: string };
 type Coverage = { source: string; coverage_start: string; coverage_end: string; row_count: number; adjustment: string };
 type SectorWindows = {
@@ -34,64 +29,9 @@ type SectorWindows = {
 };
 const NO_COMPARISONS: ChartSeries[] = [];
 
-function storedRankCount(key: string) {
-  try {
-    const value = Number(localStorage.getItem(key) ?? '5');
-    return Number.isInteger(value) ? Math.max(1, Math.min(5, value)) : 5;
-  } catch {
-    return 5;
-  }
-}
-
-function useRanking(mode: RankingMode, period: PeriodView) {
-  const today = new Date();
-  const currentYear = today.getFullYear();
-  const [year, setYear] = useState(String(currentYear));
-  const [month, setMonth] = useState(today.getMonth() + 1);
-  const [rankCounts, setRankCounts] = useState<Record<string, number>>({});
-  const monthLimit = Number(year) === currentYear ? today.getMonth() + 1 : 12;
-  const selectedMonth = Math.min(month, monthLimit);
-  const periodLabel = period === 'month' ? `${MONTHS[selectedMonth - 1]} ${year}` : year;
-  const rankKey = `gardifund-rank-${mode}-${year}${period === 'month' ? '-' + selectedMonth : ''}`;
-  const rankCount = mode === 'market' ? 1 : rankCounts[rankKey] ?? storedRankCount(rankKey);
-  const params = new URLSearchParams({mode, year, top_n: String(rankCount)});
-  if (period === 'month') params.set('month', String(selectedMonth));
-  const { data, error } = useResource(period === 'history' ? null : `/chart-performance?${params}`);
-  function saveRankCount(value: number) {
-    setRankCounts(current => ({ ...current, [rankKey]: value }));
-    try { localStorage.setItem(rankKey, String(value)); } catch { /* Keep the current session's choice. */ }
-  }
-  return { performance: data as Performance | null, error, currentYear, year, setYear, monthLimit, selectedMonth,
-    setMonth, periodLabel, rankCount, saveRankCount };
-}
-
-function RankingControls({ period, mode, ranking }: {
-  period: PeriodView; mode: RankingMode; ranking: ReturnType<typeof useRanking>;
-}) {
-  return <>
-    <label>Year
-      <select value={ranking.year} onChange={e => ranking.setYear(e.target.value)}>
-        {Array.from({length: ranking.currentYear - FIRST_HISTORY_YEAR + 1}, (_, index) => ranking.currentYear - index)
-          .map(value => <option key={value} value={value}>{value}</option>)}
-      </select>
-    </label>
-    {period === 'month' && <label>Month
-      <select value={ranking.selectedMonth} onChange={e => ranking.setMonth(Number(e.target.value))}>
-        {MONTHS.slice(0, ranking.monthLimit).map((name, index) => <option key={name} value={index + 1}>{name}</option>)}
-      </select>
-    </label>}
-    {mode !== 'market' && <label>Top N
-      <select value={ranking.rankCount} onChange={e => ranking.saveRankCount(Number(e.target.value))}>
-        {[1, 2, 3, 4, 5].map(value => <option key={value} value={value}>{value}</option>)}
-      </select>
-    </label>}
-    <Tip text="Period returns compare the first session close with the last completed session close."/>
-  </>;
-}
-
-function PriceChart({ bars, comparisons, symbol, compareFunds, chartType, volume, interval, light, rankingStart }: {
+function PriceChart({ bars, comparisons, symbol, compareFunds, chartType, volume, interval, light }: {
   bars: any[]; comparisons: ChartSeries[]; symbol: string; compareFunds: boolean; chartType: string; volume: boolean;
-  interval: string; light: boolean; rankingStart?: string;
+  interval: string; light: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -101,7 +41,7 @@ function PriceChart({ bars, comparisons, symbol, compareFunds, chartType, volume
       grid: { vertLines: { color: 'rgba(135,150,139,.08)' }, horzLines: { color: 'rgba(135,150,139,.11)' } },
       rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false, timeVisible: interval !== '1d', secondsVisible: false, minBarSpacing: 0.03 },
       crosshair: { mode: CrosshairMode.Normal }, handleScroll: true, handleScale: true });
-    if (!rankingStart && !compareFunds) {
+    if (!compareFunds) {
       if (chartType === 'candles') {
         const up = light ? '#428451' : '#a9d38f', down = light ? '#bd6557' : '#d48a7c';
         const series = chart.addCandlestickSeries({ upColor: up, downColor: down, borderVisible: false, wickUpColor: up, wickDownColor: down });
@@ -117,13 +57,9 @@ function PriceChart({ bars, comparisons, symbol, compareFunds, chartType, volume
       }
     } else {
       const selectedSeries = comparisons.filter(item => item.bars.length);
-      const available = rankingStart ? selectedSeries : [{ symbol, bars, color: light ? '#263c2c' : '#ecf3e9' }, ...selectedSeries];
-      let baseline = rankingStart;
-      if (!baseline) {
-        const common = available.reduce((set, item) => new Set(item.bars.map(b => b.time).filter(t => set.has(t))), new Set<string>(bars.map(b => b.time)));
-        baseline = [...common].sort()[0];
-      }
-      const start = baseline;
+      const available = [{ symbol, bars, color: light ? '#263c2c' : '#ecf3e9' }, ...selectedSeries];
+      const common = available.reduce((set, item) => new Set(item.bars.map(b => b.time).filter(t => set.has(t))), new Set<string>(bars.map(b => b.time)));
+      const start = [...common].sort()[0];
       if (start) for (const item of available) {
         const base = item.bars.find(b => b.time === start)?.close;
         if (!base) continue;
@@ -143,44 +79,8 @@ function PriceChart({ bars, comparisons, symbol, compareFunds, chartType, volume
     const observer = new ResizeObserver(() => { if (host.current) chart.applyOptions({ width: host.current.clientWidth }); });
     observer.observe(host.current);
     return () => { observer.disconnect(); chart.remove(); };
-  }, [bars, comparisons, symbol, compareFunds, chartType, volume, interval, light, rankingStart]);
+  }, [bars, comparisons, symbol, compareFunds, chartType, volume, interval, light]);
   return <div className="chart-host" ref={host}/>;
-}
-
-function RankedPlot({ performance, error, showDetails, light, palette }: {
-  performance: Performance | null; error: string; showDetails: boolean; light: boolean; palette: string[];
-}) {
-  const comparisons = useMemo(() => (performance?.series || []).map((series, index) => ({
-    ...series, color: palette[index % palette.length],
-  })), [performance, palette]);
-  const first = comparisons[0];
-  return performance?.start && first?.bars.length
-    ? <PriceChart bars={first.bars} comparisons={comparisons} symbol={first.symbol} compareFunds={false}
-      chartType="line" volume={false} interval="1d" light={light} rankingStart={performance.start}/>
-    : <div className="chart-empty"><Empty
-      title={performance ? 'No comparable period data' : error ? 'Performance unavailable' : 'Loading performance'}
-      description={showDetails ? performance?.message || error || 'Reading stored daily closes for the selected period.' : undefined}/></div>;
-}
-
-function RankingTable({ performance, palette, viewer }: {
-  performance: Performance | null; palette: string[]; viewer: boolean;
-}) {
-  if (!performance?.rows.length) return null;
-  return <div className="period-results">
-    <p className="panel-caption">
-      {performance.start} to {performance.end}{!performance.complete && ' · Partial coverage'}
-      {viewer ? (performance.basis === 'unverified' ? ' · Adjustments unverified' : ' · Provider-declared adjusted') : `. ${performance.message}`}
-    </p>
-    <div className="table-wrap"><table>
-      <thead><tr><th>RANK</th><th>SYMBOL</th><th>PERIOD RETURN</th></tr></thead>
-      <tbody>{performance.rows.map((row, index) => <tr key={row.symbol}>
-        <td>{index + 1}</td>
-        <td><span className="legend-dot" style={{display:'inline-block',background:palette[index % palette.length]}}/> <strong>{row.symbol}</strong>
-          <small className="cell-sub">{row.name}</small></td>
-        <td className={row.return_pct >= 0 ? 'positive' : 'negative'}>{pct(row.return_pct)}</td>
-      </tr>)}</tbody>
-    </table></div>
-  </div>;
 }
 
 type ChartAppearance = { viewer: boolean; light: boolean; palette: string[] };
@@ -367,19 +267,18 @@ function MarketChart({ active, viewer, light, palette, sectors, fund, setFund, i
   </>;
 }
 
-function SnapshotAnalysis({ active, viewer, light, palette }: ChartAppearance & { active: boolean }) {
+function SnapshotAnalysis({ active, viewer }: { active: boolean; viewer: boolean }) {
   const maxYears = new Date().getFullYear() - FIRST_HISTORY_YEAR + 1;
   const [days, setDays] = useState('20');
   const [years, setYears] = useState(() => String(Math.min(maxYears, 16)));
   const [top, setTop] = useState('3');
   const [selection, setSelection] = useState(() => ({ days, years, top }));
-  const [showCalendar, setShowCalendar] = useState(false);
   const query = new URLSearchParams({ mode: 'sector_windows', trading_days: selection.days,
     lookback_years: selection.years, top_n: selection.top });
   const { data, error } = useResource(active ? `/chart-performance?${query}` : null);
   const results = data as SectorWindows | null;
   if (!active) return null;
-  return <>
+  return (
     <section className="panel chart-panel" aria-label="Rolling sector returns">
       <div className="eyebrow">ROLLING RETURNS</div>
       <div className="chart-symbol"><h2>Top sectors</h2>
@@ -424,48 +323,7 @@ function SnapshotAnalysis({ active, viewer, light, palette }: ChartAppearance & 
         </> : <Empty title={results ? 'No comparable windows' : 'Calculating sector returns'} description={results?.message ?? undefined}/>}
       </div>
     </section>
-    <details className="panel calendar-returns" open={showCalendar} onToggle={event => setShowCalendar(event.currentTarget.open)}>
-      <summary>Calendar returns</summary>
-      {showCalendar && <SnapshotCalendarAnalysis viewer={viewer} light={light} palette={palette}/>}
-    </details>
-  </>;
-}
-
-function SnapshotCalendarAnalysis({ viewer, light, palette }: ChartAppearance) {
-  const [mode, setMode] = useState<RankingMode>('etfs');
-  const [period, setPeriod] = useState<'year' | 'month'>('year');
-  const ranking = useRanking(mode, period);
-  const { performance, error, rankCount, periodLabel } = ranking;
-  return <section className="chart-panel" aria-label="Calendar return analysis">
-    <div className="chart-heading">
-      <div>
-        <div className="eyebrow">PERIOD PERFORMANCE</div>
-        <div className="chart-symbol"><h2>{mode === 'market' ? `SPY · ${periodLabel}` : `Top ${rankCount} ETFs · ${periodLabel}`}</h2></div>
-        {mode === 'market' && <div className="chart-price">{pct(performance?.rows[0]?.return_pct)}</div>}
-        <div className="chart-mode-controls">
-          <label>Funds
-            <select value={mode} onChange={event => setMode(event.target.value as RankingMode)}>
-              <option value="etfs">SPY and sector ETFs</option>
-              <option value="market">SPY only</option>
-            </select>
-          </label>
-          <label>Period
-            <select value={period} onChange={event => setPeriod(event.target.value as 'year' | 'month')}>
-              <option value="year">Year</option>
-              <option value="month">Month</option>
-            </select>
-          </label>
-          <RankingControls period={period} mode={mode} ranking={ranking}/>
-        </div>
-      </div>
-      <div className="chart-tools"><RankingTable performance={performance} palette={palette} viewer={viewer}/></div>
-    </div>
-    <div className="chart-toolbar">
-      <span className="soft-badge">DAILY · {period === 'month' ? 'MONTH' : 'YEAR'}</span>
-      <span className="muted tiny">Indexed to the first session close</span>
-    </div>
-    <RankedPlot performance={performance} error={error} showDetails={!viewer} light={light} palette={palette}/>
-  </section>;
+  );
 }
 
 export default function Charts() {
@@ -511,7 +369,7 @@ export default function Charts() {
       <MarketChart active={tab === 'overview'} viewer={viewer} light={light} palette={palette} {...fundSelection}/>
     </div>
     <div role="tabpanel" id="snapshot-analysis" aria-labelledby="snapshot-tab-analysis" tabIndex={0} hidden={tab !== 'analysis'}>
-      <SnapshotAnalysis active={tab === 'analysis'} viewer={viewer} light={light} palette={palette}/>
+      <SnapshotAnalysis active={tab === 'analysis'} viewer={viewer}/>
     </div>
   </>;
 }
