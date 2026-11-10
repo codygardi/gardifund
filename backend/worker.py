@@ -4,9 +4,11 @@ import sqlite3
 import threading
 import time
 
-from .db import SECTORS
+from .db import BENCHMARKS, SECTORS
 from .discovery import MarketDiscovery
 from .execution import ShadowExecution
+from .market import MARKET_HISTORY_START
+from .research import BENCHMARK_SOURCES, COMPANY_HISTORY_JOB, refresh_benchmark_holdings
 from .services import refresh_holdings, sync_accounts
 
 logger = logging.getLogger(__name__)
@@ -120,8 +122,10 @@ class Worker:
                 next_run = started + (int((finished - started) // interval) + 1) * interval
             else:
                 next_run = finished + (min(interval, 300) if status == "error" else interval)
-            conn.execute("UPDATE jobs SET status=?,message=?,last_finished=?,next_run=?,lease_until=NULL WHERE name=?",
-                         (status, message, finished, next_run, job["name"]))
+            conn.execute("""UPDATE jobs SET status=?,message=?,last_finished=?,next_run=?,lease_until=NULL,
+                enabled=CASE WHEN ? THEN 0 ELSE enabled END WHERE name=?""",
+                         (status, message, finished, next_run, job["name"].startswith(COMPANY_HISTORY_JOB)
+                          and (status == "complete" or not self.stop_event.is_set()), job["name"]))
             self.db.event("settings", "job_finished", conn)
 
     def checkpoint(self):
@@ -140,6 +144,23 @@ class Worker:
         if name == "holdings":
             result = refresh_holdings(self.db, checkpoint=self.checkpoint)
             return f"{result['count']} holdings; {result['classified']} classified, dated {result['as_of']}"
+        if name == "benchmark_holdings":
+            dates, unavailable = [], []
+            for symbol in BENCHMARK_SOURCES:
+                self.checkpoint()
+                try:
+                    result = refresh_benchmark_holdings(self.db, symbol)
+                    dates.append(f"{symbol} {result['as_of']}")
+                except Exception:
+                    unavailable.append(symbol)
+            if unavailable:
+                raise ValueError("Holdings unavailable for " + ", ".join(unavailable))
+            return "Updated " + ", ".join(dates)
+        if name.startswith(COMPANY_HISTORY_JOB):
+            self.checkpoint()
+            symbol = name.removeprefix(COMPANY_HISTORY_JOB)
+            result = self.market.refresh_daily(self.adapter, symbol, earliest=MARKET_HISTORY_START.isoformat())
+            return f"Stored {result['count']} daily bars for {symbol}" if result else f"Kept imported {symbol} daily history"
         if name == "account":
             return sync_accounts(self.db, self.adapter, checkpoint=self.checkpoint)
         if name == "adjustments":
@@ -165,7 +186,7 @@ class Worker:
             return f"Updated {parts[1]} {parts[2]}: {result['count']} bars"
         if name == "market":
             errors, count, kept = [], 0, 0
-            for symbol in ["SPY", *(s for s, _ in SECTORS)]:
+            for symbol, _ in [BENCHMARKS[0], *SECTORS, *BENCHMARKS[1:]]:
                 self.checkpoint()
                 try:
                     result = self.market.refresh_daily(self.adapter, symbol)

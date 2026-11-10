@@ -4,12 +4,14 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+BENCHMARKS = [("SPY", "S&P 500"), ("DIA", "Dow Jones Industrial Average"), ("QQQ", "Nasdaq-100")]
 SECTORS = [
     ("XLC", "Communication Services"), ("XLY", "Consumer Discretionary"),
     ("XLP", "Consumer Staples"), ("XLE", "Energy"), ("XLF", "Financials"),
     ("XLV", "Health Care"), ("XLI", "Industrials"), ("XLB", "Materials"),
     ("XLRE", "Real Estate"), ("XLK", "Information Technology"), ("XLU", "Utilities"),
 ]
+RESEARCH_FUNDS = BENCHMARKS + SECTORS
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -33,6 +35,15 @@ CREATE TABLE IF NOT EXISTS holdings (
 CREATE TABLE IF NOT EXISTS holdings_snapshots (
  as_of TEXT PRIMARY KEY, source TEXT NOT NULL, imported REAL NOT NULL, row_count INTEGER NOT NULL,
  weight_sum REAL NOT NULL, note TEXT
+);
+CREATE TABLE IF NOT EXISTS benchmark_snapshots (
+ benchmark TEXT NOT NULL, as_of TEXT NOT NULL, source TEXT NOT NULL, imported REAL NOT NULL,
+ row_count INTEGER NOT NULL, weight_sum REAL NOT NULL, PRIMARY KEY(benchmark, as_of)
+);
+CREATE TABLE IF NOT EXISTS benchmark_holdings (
+ benchmark TEXT NOT NULL, as_of TEXT NOT NULL, symbol TEXT NOT NULL, name TEXT NOT NULL,
+ weight REAL NOT NULL, PRIMARY KEY(benchmark, as_of, symbol),
+ FOREIGN KEY(benchmark, as_of) REFERENCES benchmark_snapshots(benchmark, as_of) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS quotes (
  symbol TEXT PRIMARY KEY, price REAL, change REAL, change_pct REAL, volume INTEGER,
@@ -172,7 +183,7 @@ class Database:
             if json.loads(conn.execute("SELECT value FROM settings WHERE key='top_n'").fetchone()[0]) > 10:
                 conn.execute("UPDATE settings SET value='10' WHERE key='top_n'")
             now = time.time()
-            for name, seconds, delay in [("holdings", 86400, 0), ("market", 86400, 5),
+            for name, seconds, delay in [("holdings", 86400, 0), ("market", 86400, 5), ("benchmark_holdings", 86400, 35),
                                          ("account", 900, 10), ("discovery", 300, 20), ("adjustments", 86400, 30),
                                          ("portfolio", 15, 2)]:
                 conn.execute("INSERT OR IGNORE INTO jobs(name,interval_seconds,next_run) VALUES(?,?,?)",
@@ -207,9 +218,13 @@ class Database:
                 conn.execute("""UPDATE jobs SET status='idle',message='Waiting for a SPY market-session scan',
                     last_started=NULL,last_finished=NULL,next_run=? WHERE name='discovery' AND status!='running'""", (now,))
                 conn.execute("INSERT INTO migrations(name) VALUES(?)", (migration,))
-            for symbol, name in [("SPY", "SPDR S&P 500 ETF Trust"), *SECTORS]:
+            migration = "benchmark_research_v1"
+            if not conn.execute("SELECT 1 FROM migrations WHERE name=?", (migration,)).fetchone():
+                conn.execute("UPDATE jobs SET next_run=MIN(next_run,?) WHERE name='market' AND status!='running'", (now + 5,))
+                conn.execute("INSERT INTO migrations(name) VALUES(?)", (migration,))
+            for symbol, name in [("SPY", "SPDR S&P 500 ETF Trust"), *BENCHMARKS[1:], *SECTORS]:
                 conn.execute("INSERT OR IGNORE INTO instruments VALUES(?,?,?,?,?,?)",
-                             (symbol, name, "etf", name if symbol != "SPY" else None, "Fund provider", now))
+                             (symbol, name, "etf", dict(SECTORS).get(symbol), "Fund provider", now))
 
     @contextmanager
     def connect(self):

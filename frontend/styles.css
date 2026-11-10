@@ -154,6 +154,20 @@ label { display:flex; flex-direction:column; gap:7px; color:var(--muted); font-s
 .trading-day-axis { text-align:center; margin:3px 0 8px; }
 .trading-day-control { display:flex; flex-direction:row; align-items:center; gap:12px; flex-wrap:wrap; }
 .trading-day-control input { width:min(100%,220px); min-height:28px; padding:0; border:0; background:transparent; accent-color:var(--accent); }
+.research-controls { display:flex; align-items:end; gap:12px; flex-wrap:wrap; margin:16px 0; }
+.research-coverage { margin-top:16px; font-size:12px; }
+.research-coverage summary { cursor:pointer; color:var(--accent); font-weight:600; padding:5px 0; }
+.seasonal-panel + .seasonal-panel { margin-top:16px; }
+.seasonal-legend { display:flex; flex-wrap:wrap; gap:8px 14px; margin-top:14px; }
+.seasonal-legend label { display:flex; flex-direction:row; align-items:center; gap:5px; color:var(--text); }
+.seasonal-chart { height:clamp(240px,43vh,380px); width:100%; margin-top:12px; }
+.seasonal-tables { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,370px),1fr)); gap:20px; margin-top:18px; }
+.seasonal-tables > div { min-width:0; }
+.seasonal-tables :is(th,td) { white-space:nowrap; padding:10px 8px; }
+.seasonal-indicators { display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:10px; margin:14px 0 0; }
+.seasonal-indicators > div { border:1px solid var(--border); border-radius:8px; padding:12px; }
+.seasonal-indicators dt { color:var(--muted); font-size:11px; }
+.seasonal-indicators dd { margin:6px 0 0; font-weight:700; font-size:21px; }
 @media (max-width:700px) { .chart-heading { grid-template-columns:minmax(0,1fr); } }
 .chart-tools .panel-caption { margin-top:0; }
 .modal label { margin-top:16px; }

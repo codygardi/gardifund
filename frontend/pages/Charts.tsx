@@ -2,6 +2,7 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { createChart, ColorType, CrosshairMode, Time } from 'lightweight-charts';
 import { BarChart3, LineChart } from 'lucide-react';
 import { api, money, pagesBuild, pct, useApp, useResource } from '../api';
+import SeasonalityView from '../SeasonalityView';
 import TradingDayChart, { type TradingDaySeries } from '../TradingDayChart';
 import { Empty, ErrorNote, Segmented, Tip } from '../ui';
 
@@ -11,10 +12,12 @@ const EMPTY_BARS: any[] = [];
 const chartTime = (s: string): Time => (s.length === 10 ? s : Math.floor(new Date(s).getTime() / 1000)) as Time;
 const FIRST_HISTORY_YEAR = 2010;
 const MAX_WINDOW_DAYS = 5000;
+const DEFAULT_BENCHMARKS = [{symbol: 'SPY', name: 'S&P 500'}];
 
 const SNAPSHOT_TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'analysis', label: 'Analysis' },
+  { id: 'seasonality', label: 'Seasonality' },
 ] as const;
 
 type SnapshotTab = typeof SNAPSHOT_TABS[number]['id'];
@@ -87,15 +90,15 @@ function PriceChart({ bars, comparisons, symbol, compareFunds, chartType, volume
 
 type ChartAppearance = { viewer: boolean; light: boolean; palette: string[] };
 type FundSelection = {
-  sectors: Sector[]; fund: string; setFund: (fund: string) => void;
+  benchmarks: Sector[]; sectors: Sector[]; fund: string; setFund: (fund: string) => void;
   interval: Interval; setInterval: (interval: Interval) => void;
 };
 
-function FundSelect({ fund, setFund, sectors }: Pick<FundSelection, 'fund' | 'setFund' | 'sectors'>) {
-  return <label>SPY-related fund
+function FundSelect({ fund, setFund, benchmarks, sectors }: Pick<FundSelection, 'fund' | 'setFund' | 'benchmarks' | 'sectors'>) {
+  return <label>Market fund
     <select value={fund} onChange={event => setFund(event.target.value)}>
-      <option value="SPY">SPY · S&P 500</option>
-      {sectors.map(sector => <option key={sector.symbol} value={sector.symbol}>{sector.symbol} · {sector.name}</option>)}
+      <optgroup label="Benchmark ETFs">{benchmarks.map(item => <option key={item.symbol} value={item.symbol}>{item.symbol} · {item.name}</option>)}</optgroup>
+      <optgroup label="S&P 500 sector ETFs">{sectors.map(sector => <option key={sector.symbol} value={sector.symbol}>{sector.symbol} · {sector.name}</option>)}</optgroup>
     </select>
   </label>;
 }
@@ -110,7 +113,7 @@ function CoverageNote({ coverage, viewer }: { coverage?: Coverage | null; viewer
   </div>;
 }
 
-function MarketChart({ active, viewer, light, palette, sectors, fund, setFund, interval, setInterval }: ChartAppearance & FundSelection & { active: boolean }) {
+function MarketChart({ active, viewer, light, palette, benchmarks, sectors, fund, setFund, interval, setInterval }: ChartAppearance & FundSelection & { active: boolean }) {
   const { state, marketVersions } = useApp();
   const [chartType, setChartType] = useState('candles');
   const [volume, setVolume] = useState(true);
@@ -124,6 +127,7 @@ function MarketChart({ active, viewer, light, palette, sectors, fund, setFund, i
   const requestSequence = useRef<Record<string, number>>({});
   const seenVersions = useRef<Record<string, number>>({});
   const [message, setMessage] = useState('');
+  const dailyOnly = fund === 'DIA' || fund === 'QQQ';
   const availableFunds = sectors.filter(sector => sector.symbol !== fund);
   const comparisonSymbols = active ? selected.filter(symbol => symbol !== fund) : [];
   const compareFunds = comparisonSymbols.length > 0;
@@ -213,7 +217,7 @@ function MarketChart({ active, viewer, light, palette, sectors, fund, setFund, i
           </div>
           <div className="chart-symbol">
             <h2>{fund}</h2>
-            <span>{fund === 'SPY' ? 'SPDR S&P 500 ETF Trust' : 'Tradable SPY-related ETF'}</span>
+            <span>{benchmarks.find(item => item.symbol === fund)?.name || sectors.find(item => item.symbol === fund)?.name}</span>
           </div>
           <div className="chart-price">
             {money(last?.close)}
@@ -222,7 +226,10 @@ function MarketChart({ active, viewer, light, palette, sectors, fund, setFund, i
             </span>
           </div>
           <div className="chart-mode-controls">
-            <FundSelect fund={fund} setFund={setFund} sectors={sectors}/>
+            <FundSelect fund={fund} setFund={symbol => {
+              if (symbol === 'DIA' || symbol === 'QQQ') setInterval('1d');
+              setFund(symbol);
+            }} benchmarks={benchmarks} sectors={sectors}/>
           </div>
         </div>
         <div className="chart-tools">
@@ -250,7 +257,7 @@ function MarketChart({ active, viewer, light, palette, sectors, fund, setFund, i
       </div>
       <div className="chart-toolbar">
         <div className="toolbar-group">
-          <Segmented values={[{value:'1d',label:'Daily'},{value:'1h',label:'Hourly'}]} value={interval} onChange={value => setInterval(value as Interval)}/>
+          <Segmented values={dailyOnly ? [{value:'1d',label:'Daily'}] : [{value:'1d',label:'Daily'},{value:'1h',label:'Hourly'}]} value={interval} onChange={value => setInterval(value as Interval)}/>
           <span className="toolbar-separator"/>
           <button className={`chart-tool ${chartType === 'candles' ? 'on' : ''}`} onClick={() => setChartType('candles')}
             disabled={compareFunds} title="Candlesticks" aria-label="Candlesticks" aria-pressed={!compareFunds && chartType === 'candles'}><BarChart3 size={16}/></button>
@@ -338,10 +345,11 @@ export default function Charts() {
   const [fund, setFund] = useState('SPY');
   const [interval, setInterval] = useState<Interval>('1d');
   const viewer = pagesBuild || state?.access_scope === 'remote';
+  const benchmarks: Sector[] = state?.benchmarks || DEFAULT_BENCHMARKS;
   const sectors: Sector[] = state?.sectors || [];
   const light = theme === 'light';
   const palette = light ? LIGHT_COLORS : COLORS;
-  const fundSelection = { fund, setFund, interval, setInterval, sectors };
+  const fundSelection = { fund, setFund, interval, setInterval, benchmarks, sectors };
 
   function navigateTabs(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     const count = SNAPSHOT_TABS.length;
@@ -376,6 +384,9 @@ export default function Charts() {
     </div>
     <div role="tabpanel" id="snapshot-analysis" aria-labelledby="snapshot-tab-analysis" tabIndex={0} hidden={tab !== 'analysis'}>
       <SnapshotAnalysis active={tab === 'analysis'} viewer={viewer} light={light} palette={palette}/>
+    </div>
+    <div role="tabpanel" id="snapshot-seasonality" aria-labelledby="snapshot-tab-seasonality" tabIndex={0} hidden={tab !== 'seasonality'}>
+      <SeasonalityView active={tab === 'seasonality'} viewer={viewer} light={light} benchmarks={benchmarks} sectors={sectors}/>
     </div>
   </>;
 }

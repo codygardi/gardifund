@@ -208,7 +208,11 @@ def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkey
         assert client.get('/view/backups', headers=auth).status_code == 403
         assert client.get('/view/setup-access', headers=auth).status_code == 403
         assert client.get('/view/setups/live/drafts', headers=auth).status_code == 403
-        assert client.get('/view/bars?symbol=QQQ', headers=auth).status_code == 403
+        assert client.get('/view/bars?symbol=AAPL', headers=auth).status_code == 403
+        assert client.get('/view/bars?symbol=QQQ', headers=auth).status_code == 200
+        assert client.get('/view/chart-performance?mode=seasonality&symbol=QQQ', headers=auth).status_code == 200
+        assert client.get('/view/chart-performance?mode=seasonality&symbol=AAPL', headers=auth).status_code == 403
+        assert client.get('/api/database/research', headers=auth).status_code == 403
         assert client.get('/view/market/quality?symbol=QQQ', headers=auth).status_code == 403
         assert client.get('/view/state', headers={'Host': 'localhost:8765'}).status_code == 401
         assert client.get('/api/state', headers={**auth, 'Host': 'localhost:8765'}).status_code == 403
@@ -521,7 +525,7 @@ def test_sector_intraday_jobs_are_bounded_persisted_and_queueable(setup):
     app, client = setup
     state = client.get('/api/state').json()
     assert state['sector_history']['total'] == 11
-    assert {j['name'] for j in state['jobs']} == {'account','discovery','holdings','market','adjustments','portfolio'}
+    assert {j['name'] for j in state['jobs']} == {'account','benchmark_holdings','discovery','holdings','market','adjustments','portfolio'}
     response = mutate(client, 'POST', '/api/market/sector-history', json={'interval':'1h','symbols':['XLC','XLF']})
     assert response.status_code == 200 and set(response.json()['queued']) == {'XLC','XLF'}
     assert mutate(client, 'POST', '/api/market/sector-history', json={'interval':'30m','symbols':['XLC']}).status_code == 422
@@ -650,11 +654,11 @@ def test_startup_trims_existing_market_files_without_touching_other_symbols(tmp_
 
     old_spy = legacy('SPY', '1d', ['2009-12-31', '2010-01-04', '2010-01-05', '2099-01-01'])
     old_xlk = legacy('XLK', '1h', ['2009-12-31T14:30:00Z'])
-    other = legacy('QQQ', '1d', ['2009-12-31'])
+    other = legacy('IWM', '1d', ['2009-12-31'])
     with db.connect() as conn:
         conn.executemany("INSERT INTO corporate_actions VALUES(?,?,?,?,?)", [
             ('SPY', '2009-12-31', 'dividend', .5, 'fixture'), ('SPY', '2010-01-04', 'dividend', .5, 'fixture'),
-            ('QQQ', '2009-12-31', 'dividend', .5, 'fixture')])
+            ('IWM', '2009-12-31', 'dividend', .5, 'fixture')])
         conn.execute("INSERT INTO market_anomalies VALUES(?,?,?,?,?,?)", ('SPY', '1d', '2009-12-30', 'invalid', '{}', 1))
         conn.execute("INSERT INTO quality_audits(symbol,interval,primary_updated,audited,reference,result) VALUES(?,?,?,?,?,?)",
                      ('SPY', '1d', 1, 2, 'fixture', '{"primary_start":"2009-12-31","primary_end":"2010-01-05"}'))
@@ -668,13 +672,35 @@ def test_startup_trims_existing_market_files_without_touching_other_symbols(tmp_
     with db.connect() as conn:
         path = conn.execute("SELECT path FROM market_files WHERE symbol='SPY'").fetchone()['path']
         assert [tuple(row) for row in conn.execute("SELECT symbol,ex_date FROM corporate_actions ORDER BY symbol")] == [
-            ('QQQ', '2009-12-31'), ('SPY', '2010-01-04')]
+            ('IWM', '2009-12-31'), ('SPY', '2010-01-04')]
         assert conn.execute("SELECT count(*) FROM market_anomalies").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM quality_audits").fetchone()[0] == 0
     assert pq.read_table(market.resolve_path(path))['time'].to_pylist() == ['2010-01-04', '2010-01-05']
     market.enforce_history_window()
     with db.connect() as conn:
         assert conn.execute("SELECT path FROM market_files WHERE symbol='SPY'").fetchone()['path'] == path
+
+
+def test_company_watchlists_group_share_classes_and_queue_unique_price_tickers(setup):
+    app, client = setup
+    holdings = ("as_of,symbol,name,weight\n"
+                "2024-01-04,GOOGL,Alphabet Inc Class A,0.22\n"
+                "2024-01-04,GOOG,Alphabet Inc Class C,0.20\n"
+                "2024-01-04,MSFT,Microsoft Corp,0.30\n")
+    response = mutate(client, 'POST', '/api/import/holdings', data={'benchmark': 'QQQ', 'source': 'fixture'},
+                      files={'file': ('holdings.csv', holdings, 'text/csv')})
+    assert response.status_code == 200 and response.json()['count'] == 3
+    research = client.get('/api/database/research').json()
+    qqq = next(group for group in research['groups'] if group['symbol'] == 'QQQ')
+    assert qqq['as_of'] == '2024-01-04' and qqq['source'] == 'fixture'
+    assert [row['symbol'] for row in qqq['companies']] == ['GOOGL', 'MSFT']
+    assert qqq['companies'][0]['tickers'] == ['GOOGL', 'GOOG']
+    assert qqq['companies'][0]['weight'] == pytest.approx(.42)
+    assert mutate(client, 'POST', '/api/database/research/QQQ/history').json() == {'queued': 2, 'pending': 0}
+    assert mutate(client, 'POST', '/api/database/research/QQQ/history').json() == {'queued': 0, 'pending': 2}
+    with app.state.db.connect() as conn:
+        assert {row['name'] for row in conn.execute("SELECT name FROM jobs WHERE name LIKE 'research_daily:%'")} == {
+            'research_daily:GOOGL', 'research_daily:MSFT'}
 
 
 def test_corporate_action_pagination_preserves_same_date_events(setup):
@@ -1011,9 +1037,9 @@ def test_remote_sse_only_forwards_safe_market_identifiers(setup):
         app.state.db.event('charts', 'market_updated', payload={'symbol':'XLC', 'interval':'1h', 'private':'SECRET'})
         market = await asyncio.wait_for(anext(stream), timeout=4)
         assert 'market_updated' in market and 'XLC' in market and 'SECRET' not in market
-        app.state.db.event('charts', 'market_updated', payload={'symbol':'QQQ', 'interval':'1h'})
+        app.state.db.event('charts', 'market_updated', payload={'symbol':'AAPL', 'interval':'1h'})
         private = await asyncio.wait_for(anext(stream), timeout=4)
-        assert 'QQQ' not in private and 'status' in private
+        assert 'AAPL' not in private and 'status' in private
         app.state.db.event('charts', 'market_updated', payload={'symbol':'AAA', 'interval':'1d'})
         constituent = await asyncio.wait_for(anext(stream), timeout=4)
         assert 'AAA' not in constituent and '"module": "charts"' in constituent and '"payload": null' in constituent

@@ -19,7 +19,7 @@ import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .db import Database, SECTORS
+from .db import Database, RESEARCH_FUNDS
 from .audit import compare_daily_closes, yahoo_daily_reference
 from .tradier import ProviderError, Tradier
 
@@ -30,7 +30,7 @@ BAR_SCHEMA = pa.schema([("time", pa.string()), ("open", pa.float64()), ("high", 
                         ("low", pa.float64()), ("close", pa.float64()), ("volume", pa.int64())])
 LOCK = RLock()
 MARKET_HISTORY_START = date(2010, 1, 1)
-MARKET_HISTORY_SYMBOLS = frozenset({"SPY", *(symbol for symbol, _ in SECTORS)})
+MARKET_HISTORY_SYMBOLS = frozenset(symbol for symbol, _ in RESEARCH_FUNDS)
 MARKET_TIMEZONE = ZoneInfo("America/New_York")
 
 
@@ -532,14 +532,17 @@ class MarketStore:
         rows = list(csv.DictReader(io.StringIO(content.decode("utf-8-sig"))))
         return self.write(symbol, interval, rows, source, adjustment, replace)
 
-    def refresh_daily(self, adapter: Tradier, symbol):
+    def refresh_daily(self, adapter: Tradier, symbol, earliest=None):
         symbol = valid_symbol(symbol)
         with self.db.connect() as conn:
             prior = conn.execute("SELECT * FROM market_files WHERE symbol=? AND interval='1d'", (symbol,)).fetchone()
         if prior and (prior["source"] != "Tradier" or prior["adjustment"] != "unverified"):
             return None
         bounds = history_bounds(symbol)
-        first, end = bounds or ("2000-01-01", datetime.now(MARKET_TIMEZONE).date().isoformat())
+        end_today = datetime.now(MARKET_TIMEZONE).date().isoformat()
+        if bounds is None and earliest is not None:
+            bounds = (earliest, end_today)
+        first, end = bounds or ("2000-01-01", end_today)
         start = first
         if prior and prior["coverage_end"]:
             overlap = (date.fromisoformat(prior["coverage_end"][:10]) - timedelta(days=10)).isoformat()

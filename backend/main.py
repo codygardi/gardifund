@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from . import shadow
 from .config import ROOT, Settings
-from .db import Database, SECTORS
+from .db import BENCHMARKS, RESEARCH_FUNDS, Database, SECTORS
 from .discovery import MarketDiscovery
 from .market import BAR_INTERVALS, LOCK, MARKET_HISTORY_SYMBOLS, BarInterval, MarketStore, history_bounds, history_contains, valid_symbol
 from .security import AccessGuard
@@ -29,6 +29,8 @@ from .tradier import Tradier, ProviderError
 from .worker import Worker
 from .execution import regular_session
 from .performance import MAX_WINDOW_DAYS, PerformanceMode, PeriodPerformance
+from .research import queue_company_history, research_catalog, store_benchmark_holdings
+from .seasonality import MAX_YEARS, Seasonality
 
 
 class SettingsUpdate(BaseModel):
@@ -82,6 +84,8 @@ def create_app(settings: Settings | None = None, adapter=None):
     discovery_store = MarketDiscovery(db, adapter)
     worker = Worker(db, adapter, market, discovery_store)
     performance = PeriodPerformance(db, market)
+    seasonality = Seasonality(market)
+    benchmarks = [{"symbol": symbol, "name": name} for symbol, name in BENCHMARKS]
     setup_lock = LiveSetupLock(settings.setups_password_hash)
 
     @asynccontextmanager
@@ -125,7 +129,9 @@ def create_app(settings: Settings | None = None, adapter=None):
     @app.get("/api/state")
     def state(request: Request):
         with db.connect() as conn:
-            jobs = [dict(r) for r in conn.execute("SELECT * FROM jobs WHERE name NOT LIKE 'sector_intraday:%' AND name NOT LIKE 'sector_reference:%' AND name!='universe_otc' ORDER BY name")]
+            jobs = [dict(r) for r in conn.execute("""SELECT * FROM jobs WHERE name NOT LIKE 'sector_intraday:%'
+                AND name NOT LIKE 'sector_reference:%' AND name NOT LIKE 'research_daily:%'
+                AND name!='universe_otc' ORDER BY name""")]
             sector_jobs = [dict(r) for r in conn.execute("SELECT name,status,message,last_finished,next_run FROM jobs WHERE name LIKE 'sector_intraday:%:1h'")]
             latest = conn.execute("SELECT * FROM holdings_snapshots ORDER BY as_of DESC LIMIT 1").fetchone()
             last_id = conn.execute("SELECT COALESCE(MAX(id),0) FROM events").fetchone()[0]
@@ -137,7 +143,7 @@ def create_app(settings: Settings | None = None, adapter=None):
         scan_status = {key: value for key, value in scan.items() if key != "lists"}
         scan_status["progress"] = discovery_store.progress()
         return {"access_scope": request.state.access_scope, "settings": db.settings(), "jobs": jobs, 'session': session, "sectors": [{"symbol": s, "name": n} for s, n in SECTORS],
-                "holdings": dict(latest) if latest else None, "event_id": last_id,
+                "benchmarks": benchmarks, "holdings": dict(latest) if latest else None, "event_id": last_id,
                 "discovery": scan_status,
                 "sector_history": {"total": len(sector_jobs), "complete": sum(j["status"] == "complete" for j in sector_jobs),
                                    "running": sum(j["status"] == "running" for j in sector_jobs),
@@ -188,7 +194,7 @@ def create_app(settings: Settings | None = None, adapter=None):
                     if request.state.access_scope == "remote":
                         payload = event.get("payload") or {}
                         if (event["module"] == "charts" and event["action"] == "market_updated"
-                                and payload.get("symbol") in {"SPY", *(s for s, _ in SECTORS)}
+                                and payload.get("symbol") in MARKET_HISTORY_SYMBOLS
                                 and payload.get("interval") in BAR_INTERVALS):
                             event["payload"] = {"symbol": payload["symbol"], "interval": payload["interval"]}
                         else:
@@ -318,14 +324,20 @@ def create_app(settings: Settings | None = None, adapter=None):
 
     @app.get("/api/chart-performance")
     @app.get("/view/chart-performance", include_in_schema=False)
-    def chart_performance(mode: PerformanceMode | Literal["sector_windows"], year: int | None = Query(None, ge=2000, le=2100),
+    def chart_performance(request: Request, mode: PerformanceMode | Literal["sector_windows", "seasonality"],
+                          year: int | None = Query(None, ge=2000, le=2100),
                           month: int | None = Query(None, ge=1, le=12), top_n: int | None = Query(None, ge=1, le=5),
-                          trading_days: int = Query(20, ge=1, le=MAX_WINDOW_DAYS),
-                          lookback_years: int = Query(16, ge=1)):
+                          trading_days: int | None = Query(None, ge=1, le=MAX_WINDOW_DAYS),
+                          lookback_years: int | None = Query(None, ge=1), symbol: str = "SPY"):
+        if mode == "seasonality":
+            viewer = request.state.access_scope == "remote"
+            ticker = view_symbol(symbol) if viewer else valid_symbol(symbol)
+            data = seasonality.get(ticker, lookback_years or MAX_YEARS, trading_days or 21)
+            return {**data, "coverage": public_coverage(data["coverage"])} if viewer else data
         if mode == "sector_windows":
             if top_n is not None and top_n > 3:
                 raise HTTPException(status_code=422, detail="Choose 1–3 sectors.")
-            return performance.sector_windows(trading_days, lookback_years, top_n or 3)
+            return performance.sector_windows(trading_days or 20, lookback_years or 16, top_n or 3)
         if year is None:
             raise HTTPException(status_code=422, detail="Choose a year for calendar returns.")
         return performance.get(mode, year, month, top_n or 5)
@@ -371,9 +383,14 @@ def create_app(settings: Settings | None = None, adapter=None):
                      "reference": audit_row["reference"], "stale": current != audit_row["primary_updated"],
                      **json.loads(audit_row["result"])}
         last_account_activity = max((stamp for stamp in (account_fresh, shadow_fresh) if stamp is not None), default=None)
+        research_prices = [f for f in files if f["interval"] == "1d" and f["symbol"] in MARKET_HISTORY_SYMBOLS]
         catalog = [
             {"dataset": "Market", "source": ", ".join(market_sources) or "Not imported", "coverage": "See individual series below",
              "freshness": max((f["updated"] for f in files), default=None), "status": "Available; quality checks below" if files else "Not imported"},
+            {"dataset": "Seasonality prices", "source": ", ".join(sorted({f["source"] for f in research_prices})) or "Tradier",
+             "coverage": f"{len(research_prices)} of {len(RESEARCH_FUNDS)} benchmark and sector daily series",
+             "freshness": max((f["updated"] for f in research_prices), default=None),
+             "status": "See daily coverage" if research_prices else "Awaiting prices"},
             {"dataset": "Instruments", "source": ", ".join(instrument_sources) or "Not imported", "coverage": f"{counts['instruments']} reference records",
              "freshness": instrument_fresh, "status": "Available" if counts['instruments'] else "Not imported"},
             {"dataset": "Discovery universe", "source": snapshots[0]["source"] if snapshots else "Not imported",
@@ -391,11 +408,25 @@ def create_app(settings: Settings | None = None, adapter=None):
              "freshness": last_account_activity, "status": "Synchronized" if account_fresh else "Awaiting live sync"},
             {"dataset": "News", "source": "Not connected", "coverage": "None", "freshness": None, "status": "Placeholder"},
             {"dataset": "Back tests", "source": "Not connected", "coverage": "None", "freshness": None, "status": "Placeholder"},
+            {"dataset": "Company fundamentals", "source": "Source selection pending", "coverage": "Financial statements and capital structure",
+             "freshness": None, "status": "Planned · Phase 2"},
+            {"dataset": "Social sentiment", "source": "Source selection pending", "coverage": "Dated company and sector sentiment",
+             "freshness": None, "status": "Planned · Phase 2"},
+            {"dataset": "Economic cycles", "source": "Source selection pending", "coverage": "Economic and financial time series",
+             "freshness": None, "status": "Planned · Phase 3"},
         ]
         return {"market": files, "snapshots": snapshots, "imports": imports, "counts": counts, "audit": audit,
                 "catalog": catalog,
                 "notes": ["Coverage endpoints do not prove continuity; gaps and provider adjustments remain unverified.",
                           "News and backtest datasets are placeholders."]}
+
+    @app.get("/api/database/research")
+    def research_inventory():
+        return research_catalog(db)
+
+    @app.post("/api/database/research/{group}/history")
+    def load_company_history(group: str):
+        return queue_company_history(db, group)
 
     @app.get("/api/database/actions")
     def action_records(symbol: str = "SPY", limit: int = Query(50, ge=1, le=100), before_date: str | None = None,
@@ -428,7 +459,7 @@ def create_app(settings: Settings | None = None, adapter=None):
         return db.settings()
 
     @app.post("/api/jobs/{name}/run")
-    def run_job(name: Literal["holdings", "market", "account", "discovery", "adjustments", "portfolio"]):
+    def run_job(name: Literal["holdings", "market", "benchmark_holdings", "account", "discovery", "adjustments", "portfolio"]):
         with db.connect() as conn:
             job = conn.execute("SELECT status FROM jobs WHERE name=?", (name,)).fetchone()
             if job["status"] == "running":
@@ -447,7 +478,8 @@ def create_app(settings: Settings | None = None, adapter=None):
         return market.import_csv(symbol, interval, content, source.strip(), adjustment, replace)
 
     @app.post("/api/import/holdings")
-    async def import_holdings(file: UploadFile = File(), source: str = Form()):
+    async def import_holdings(file: UploadFile = File(), source: str = Form(),
+                              benchmark: Literal["SPY", "DIA", "QQQ"] = Form("SPY")):
         content = await file.read(5 * 1024 * 1024 + 1)
         if len(content) > 5 * 1024 * 1024 or not source.strip():
             raise ValueError("A source and CSV under 5 MB are required")
@@ -456,8 +488,11 @@ def create_app(settings: Settings | None = None, adapter=None):
             dates = {r["as_of"] for r in rows}
             if len(dates) != 1:
                 raise ValueError("CSV must contain exactly one as_of date")
-            return store_holdings(db, dates.pop(), rows, source.strip(), "User-imported snapshot; classification and weights are provider-declared.")
-        except (UnicodeDecodeError, KeyError):
+            as_of = dates.pop()
+            if benchmark != "SPY":
+                return store_benchmark_holdings(db, benchmark, as_of, rows, source.strip())
+            return store_holdings(db, as_of, rows, source.strip(), "User-imported snapshot; classification and weights are provider-declared.")
+        except (UnicodeDecodeError, KeyError, TypeError):
             raise ValueError("Invalid holdings CSV; see import documentation") from None
 
     @app.post("/api/import/actions")
@@ -540,7 +575,7 @@ def create_app(settings: Settings | None = None, adapter=None):
     def view_state(request: Request):
         raw = state(request)
         return {"access_scope": "remote", "settings": {k: raw["settings"].get(k) for k in ("appearance", "top_n")},
-                "sectors": raw["sectors"], "event_id": raw["event_id"],
+                "sectors": raw["sectors"], "benchmarks": benchmarks, "event_id": raw["event_id"],
                 "connection": {"auth_mode": settings.auth_mode, "live_orders_enabled": False}}
 
     @app.get("/view/events", include_in_schema=False)
@@ -635,7 +670,7 @@ def create_app(settings: Settings | None = None, adapter=None):
 
     def view_symbol(symbol):
         value = valid_symbol(symbol)
-        if value not in {"SPY", *(s for s, _ in SECTORS)}:
+        if value not in MARKET_HISTORY_SYMBOLS:
             raise HTTPException(status_code=403, detail="This series is available locally only.")
         return value
 

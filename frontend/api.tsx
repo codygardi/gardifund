@@ -127,11 +127,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
 export function useResource(path: string | null) {
   const { revision, resourceVersions, marketVersions } = useApp();
-  const name = path?.split('?')[0] || '';
+  const [name, search] = path?.split('?') ?? [];
+  const query = new URLSearchParams(search);
   let version = 0;
-  if (name === '/bars') {
-    const query = new URLSearchParams(path?.split('?')[1]);
-    version = marketVersions[`${query.get('symbol') || 'SPY'}:${query.get('interval') || '1d'}`] || 0;
+  if (name === '/bars' || (name === '/chart-performance' && query.get('mode') === 'seasonality')) {
+    const interval = name === '/bars' ? query.get('interval') || '1d' : '1d';
+    version = marketVersions[`${query.get('symbol') || 'SPY'}:${interval}`] || 0;
   } else {
     const modules = name === '/overview' || name === '/overview/summary' || name === '/positions' ? ['overview','investing']
       : name === '/chart-performance' ? ['charts','database'] : name === '/sectors' ? ['investing','overview','charts']
