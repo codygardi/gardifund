@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, ColorType, CrosshairMode, Time } from 'lightweight-charts';
 import { BarChart3, LineChart } from 'lucide-react';
 import { api, money, pagesBuild, pct, useApp, useResource } from '../api';
-import { Empty, ErrorNote, Segmented, Tip } from '../ui';
+import { Empty, ErrorNote, SectionTitle, Segmented, Tip } from '../ui';
 
 const COLORS = ['#a6d68a','#dfb76e','#89b9c7','#d295a1','#bb9cce','#d8cf8a','#87c6a4','#df9579','#9bafe4','#d5a4cb','#8fb9a5'];
 const LIGHT_COLORS = ['#387349','#9a6720','#327387','#a64d61','#75548a','#827520','#35785d','#a35439','#485e9a','#935482','#4d7564'];
@@ -10,13 +10,23 @@ const EMPTY_BARS: any[] = [];
 const chartTime = (s: string): Time => (s.length === 10 ? s : Math.floor(new Date(s).getTime() / 1000)) as Time;
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-type ChartMode = 'market' | 'etfs';
+const SNAPSHOT_TABS = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'data', label: 'Data' },
+  { id: 'analysis', label: 'Analysis' },
+] as const;
+
+type SnapshotTab = typeof SNAPSHOT_TABS[number]['id'];
+type RankingMode = 'market' | 'etfs';
 type PeriodView = 'history' | 'year' | 'month';
+type Interval = '1d' | '1h';
 type ChartSeries = { symbol: string; bars: any[]; color: string };
 type PerformanceRow = { symbol: string; name: string; return_pct: number };
 type Performance = { start: string | null; end: string | null; rows: PerformanceRow[];
   series: Omit<ChartSeries, 'color'>[]; complete: boolean; basis: string | null; message: string };
 type Sector = { symbol: string; name: string };
+type Bar = { time: string; open: number; high: number; low: number; close: number; volume: number };
+type Coverage = { source: string; coverage_start: string; coverage_end: string; row_count: number; adjustment: string };
 const NO_COMPARISONS: ChartSeries[] = [];
 
 function storedRankCount(key: string) {
@@ -28,7 +38,7 @@ function storedRankCount(key: string) {
   }
 }
 
-function useRanking(mode: ChartMode, period: PeriodView) {
+function useRanking(mode: RankingMode, period: PeriodView) {
   const today = new Date();
   const currentYear = today.getFullYear();
   const [year, setYear] = useState(String(currentYear));
@@ -51,7 +61,7 @@ function useRanking(mode: ChartMode, period: PeriodView) {
 }
 
 function RankingControls({ period, mode, ranking }: {
-  period: PeriodView; mode: ChartMode; ranking: ReturnType<typeof useRanking>;
+  period: PeriodView; mode: RankingMode; ranking: ReturnType<typeof useRanking>;
 }) {
   return <>
     <label>Year
@@ -169,14 +179,33 @@ function RankingTable({ performance, palette, viewer }: {
 }
 
 type ChartAppearance = { viewer: boolean; light: boolean; palette: string[] };
+type FundSelection = {
+  sectors: Sector[]; fund: string; setFund: (fund: string) => void;
+  interval: Interval; setInterval: (interval: Interval) => void;
+};
 
-function MarketChart({ viewer, light, palette, sectors }: ChartAppearance & { sectors: Sector[] }) {
+function FundSelect({ fund, setFund, sectors }: Pick<FundSelection, 'fund' | 'setFund' | 'sectors'>) {
+  return <label>SPY-related fund
+    <select value={fund} onChange={event => setFund(event.target.value)}>
+      <option value="SPY">SPY · S&P 500</option>
+      {sectors.map(sector => <option key={sector.symbol} value={sector.symbol}>{sector.symbol} · {sector.name}</option>)}
+    </select>
+  </label>;
+}
+
+function CoverageNote({ coverage, viewer }: { coverage?: Coverage | null; viewer: boolean }) {
+  if (!coverage) return viewer ? null : <div className="coverage-note">No coverage available</div>;
+  return <div className="coverage-note">
+    <span>{`${viewer ? '' : coverage.source + ' · '}${coverage.coverage_start} to ${coverage.coverage_end}`}</span>
+    <span>{coverage.adjustment === 'split_dividend_adjusted' ? 'Provider-declared adjusted' : 'Adjustments unverified'}
+      <Tip text={viewer ? 'The displayed date range may contain gaps.' : 'The stored date range can contain gaps. Tradier daily prices may lack dividend adjustments, and Yahoo limits hourly history.'}/>
+    </span>
+  </div>;
+}
+
+function MarketChart({ active, viewer, light, palette, sectors, fund, setFund, interval, setInterval }: ChartAppearance & FundSelection & { active: boolean }) {
   const { state, marketVersions } = useApp();
-  const [interval, setInterval] = useState('1d');
   const [chartType, setChartType] = useState('candles');
-  const [mode, setMode] = useState<ChartMode>('market');
-  const [fund, setFund] = useState('SPY');
-  const [period, setPeriod] = useState<PeriodView>('history');
   const [volume, setVolume] = useState(true);
   const [selected, setSelected] = useState<string[]>([]);
   const [compare, setCompare] = useState<ChartSeries[]>([]);
@@ -188,14 +217,10 @@ function MarketChart({ viewer, light, palette, sectors }: ChartAppearance & { se
   const requestSequence = useRef<Record<string, number>>({});
   const seenVersions = useRef<Record<string, number>>({});
   const [message, setMessage] = useState('');
-  const ranked = period !== 'history';
   const availableFunds = sectors.filter(sector => sector.symbol !== fund);
-  const comparisonSymbols = !ranked && mode === 'etfs' ? selected.filter(symbol => symbol !== fund) : [];
+  const comparisonSymbols = active ? selected.filter(symbol => symbol !== fund) : [];
   const compareFunds = comparisonSymbols.length > 0;
-  const chartSymbol = mode === 'etfs' ? fund : 'SPY';
-  const { data, error } = useResource(ranked ? null : `/bars?symbol=${chartSymbol}&interval=${interval}&limit=12000`);
-  const ranking = useRanking(mode, period);
-  const { performance, error: performanceError, periodLabel, rankCount } = ranking;
+  const { data, error } = useResource(active ? `/bars?symbol=${fund}&interval=${interval}&limit=12000` : null);
   const sectorsKey = sectors.map(sector => sector.symbol).join(',');
 
   async function loadComparison(symbol: string, seriesInterval: string, epoch: number) {
@@ -246,18 +271,18 @@ function MarketChart({ viewer, light, palette, sectors }: ChartAppearance & { se
       }
     }
   }, [marketVersions, comparisonSymbols.join(','), interval, light]);
-  const historyKey = `${chartSymbol}:${interval}:${data?.coverage?.updated ?? ''}`;
+  const historyKey = `${fund}:${interval}:${data?.coverage?.updated ?? ''}`;
   historyKeyRef.current = historyKey;
   const baseBars = data?.bars || EMPTY_BARS;
   const earlier = older?.key === historyKey ? older.bars : EMPTY_BARS;
   const bars = useMemo(() => earlier.length ? [...earlier, ...baseBars] : baseBars, [earlier, baseBars]);
   const hasOlder = older?.key === historyKey ? older.hasMore : Boolean(data?.has_more);
   async function loadOlder() {
-    if (ranked || loadingOlder || !bars.length) return;
+    if (!active || loadingOlder || !bars.length) return;
     const expected = historyKey;
     setLoadingOlder(true);
     try {
-      const params = new URLSearchParams({symbol:chartSymbol, interval, limit:'12000', before:bars[0].time});
+      const params = new URLSearchParams({symbol:fund, interval, limit:'12000', before:bars[0].time});
       const result = await api(`/bars?${params}`);
       if (historyKeyRef.current !== expected) return;
       setOlder(current => ({key: expected, bars: [...result.bars, ...(current?.key === expected ? current.bars : [])], hasMore: result.has_more}));
@@ -267,63 +292,39 @@ function MarketChart({ viewer, light, palette, sectors }: ChartAppearance & { se
   const last = bars.at(-1), previous = bars.at(-2);
   const change = last && previous ? (last.close / previous.close - 1) * 100 : null;
   function toggle(symbol: string) { setSelected(current => current.includes(symbol) ? current.filter(x => x !== symbol) : [...current, symbol]); }
-  const feedback = error || performanceError || message;
+  const feedback = error || message;
   const missingComparisons = compareFunds ? compare.filter(series => !series.bars.length).map(series => series.symbol) : [];
+  if (!active) return null;
   return <>
     <ErrorNote text={viewer && feedback ? 'Data temporarily unavailable.' : feedback}/>
     <section className="panel chart-panel" aria-label="Market overview chart">
       <div className="chart-heading">
         <div>
           <div className="eyebrow">
-            {ranked ? 'PERIOD PERFORMANCE' : 'MARKET OVERVIEW'}
+            MARKET OVERVIEW
             {!viewer && <Tip text="Daily market data comes from Tradier. Hourly data comes from Yahoo Finance via yfinance."/>}
           </div>
           <div className="chart-symbol">
-            <h2>{ranked
-              ? (mode === 'market' ? `SPY · ${periodLabel}` : `Top ${rankCount} ETFs · ${periodLabel}`)
-              : chartSymbol}</h2>
-            <span>{ranked ? 'SPY and related funds' : mode === 'etfs' ? 'Tradable SPY-related ETF' : 'SPDR S&P 500 ETF Trust'}</span>
+            <h2>{fund}</h2>
+            <span>{fund === 'SPY' ? 'SPDR S&P 500 ETF Trust' : 'Tradable SPY-related ETF'}</span>
           </div>
           <div className="chart-price">
-            {ranked ? (mode === 'market' ? pct(performance?.rows?.[0]?.return_pct)
-              : period === 'month' ? 'Monthly performance' : 'Annual performance') : money(last?.close)}
-            {!ranked && <span className={change == null ? 'muted' : change >= 0 ? 'positive' : 'negative'}>
+            {money(last?.close)}
+            <span className={change == null ? 'muted' : change >= 0 ? 'positive' : 'negative'}>
               {pct(change)} <small>vs. prior bar</small>
-            </span>}
+            </span>
           </div>
           <div className="chart-mode-controls">
-            <label>Period
-              <select value={period} onChange={e => setPeriod(e.target.value as PeriodView)}>
-                <option value="history">Full history</option>
-                <option value="year">Year</option>
-                <option value="month">Month</option>
-              </select>
-            </label>
-            {ranked && <RankingControls period={period} mode={mode} ranking={ranking}/>}
-            {!ranked && mode === 'etfs' && <label>SPY-related fund
-              <select value={fund} onChange={e => setFund(e.target.value)}>
-                <option value="SPY">SPY · S&P 500</option>
-                {sectors.map(sector => <option key={sector.symbol} value={sector.symbol}>{sector.symbol} · {sector.name}</option>)}
-              </select>
-            </label>}
+            <FundSelect fund={fund} setFund={setFund} sectors={sectors}/>
           </div>
         </div>
         <div className="chart-tools">
-          <div className="chart-switcher" role="group" aria-label="Market chart view">
-            <Segmented values={[{value:'market',label:'Market'},{value:'etfs',label:'ETFs'}]} value={mode} onChange={value => setMode(value as ChartMode)}/>
-          </div>
-          {!ranked && bars.length > 0 && (!viewer || hasOlder) && <div className="history-controls">
-            {!viewer && <span className="muted tiny">{bars.length.toLocaleString()} of {data?.coverage?.row_count?.toLocaleString() || '—'} stored {chartSymbol} bars loaded</span>}
+          {bars.length > 0 && (!viewer || hasOlder) && <div className="history-controls">
+            {!viewer && <span className="muted tiny">{bars.length.toLocaleString()} of {data?.coverage?.row_count?.toLocaleString() || '—'} stored {fund} bars loaded</span>}
             {hasOlder && <button type="button" className="button secondary" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? 'Loading earlier bars…' : 'Load earlier bars'}</button>}
           </div>}
-          {!ranked && (!viewer || data?.coverage) && <div className="coverage-note">
-            <span>{data?.coverage ? `${viewer ? '' : data.coverage.source + ' · '}${data.coverage.coverage_start} to ${data.coverage.coverage_end}` : 'No coverage available'}</span>
-            <span>{data?.coverage?.adjustment === 'split_dividend_adjusted' ? 'Provider-declared adjusted' : 'Adjustments unverified'}
-              <Tip text={viewer ? 'The displayed date range may contain gaps.' : 'The stored date range can contain gaps. Tradier daily prices may lack dividend adjustments, and Yahoo limits hourly history.'}/>
-            </span>
-          </div>}
-          {ranked && <RankingTable performance={performance} palette={palette} viewer={viewer}/>}
-          {!ranked && mode === 'etfs' && availableFunds.length > 0 && <div className="sector-picker">
+          <CoverageNote coverage={data?.coverage} viewer={viewer}/>
+          {availableFunds.length > 0 && <div className="sector-picker">
             <div className="sector-picker-top">
               <div><strong>Compare sector ETFs</strong>{!viewer && <small>Normalized price change · ETF data must match the selected interval</small>}</div>
               <button type="button" className="text-link" onClick={() => setSelected(comparisonSymbols.length === availableFunds.length ? [] : availableFunds.map(s => s.symbol))}>
@@ -341,25 +342,19 @@ function MarketChart({ viewer, light, palette, sectors }: ChartAppearance & { se
         </div>
       </div>
       <div className="chart-toolbar">
-        {ranked ? <>
-          <span className="soft-badge">DAILY · {period === 'month' ? 'MONTH' : 'YEAR'}</span>
-          <span className="muted tiny">Indexed to the first session close</span>
-        </> : <>
-          <div className="toolbar-group">
-            <Segmented values={[{value:'1d',label:'Daily'},{value:'1h',label:'Hourly'}]} value={interval} onChange={setInterval}/>
-            <span className="toolbar-separator"/>
-            <button className={`chart-tool ${chartType === 'candles' ? 'on' : ''}`} onClick={() => setChartType('candles')}
-              disabled={compareFunds} title="Candlesticks" aria-label="Candlesticks" aria-pressed={!compareFunds && chartType === 'candles'}><BarChart3 size={16}/></button>
-            <button className={`chart-tool ${chartType === 'line' ? 'on' : ''}`} onClick={() => setChartType('line')}
-              disabled={compareFunds} title="Line chart" aria-label="Line chart" aria-pressed={compareFunds || chartType === 'line'}><LineChart size={16}/></button>
-            <button className={`chart-tool volume-toggle ${volume ? 'on' : ''}`} disabled={compareFunds}
-              onClick={() => setVolume(value => !value)} aria-pressed={!compareFunds && volume}>Volume</button>
-          </div>
-          {compareFunds ? <span className="muted tiny">Indexed to first common close</span> : !viewer && <span className="muted tiny">Drag to pan · scroll to zoom</span>}
-        </>}
+        <div className="toolbar-group">
+          <Segmented values={[{value:'1d',label:'Daily'},{value:'1h',label:'Hourly'}]} value={interval} onChange={value => setInterval(value as Interval)}/>
+          <span className="toolbar-separator"/>
+          <button className={`chart-tool ${chartType === 'candles' ? 'on' : ''}`} onClick={() => setChartType('candles')}
+            disabled={compareFunds} title="Candlesticks" aria-label="Candlesticks" aria-pressed={!compareFunds && chartType === 'candles'}><BarChart3 size={16}/></button>
+          <button className={`chart-tool ${chartType === 'line' ? 'on' : ''}`} onClick={() => setChartType('line')}
+            disabled={compareFunds} title="Line chart" aria-label="Line chart" aria-pressed={compareFunds || chartType === 'line'}><LineChart size={16}/></button>
+          <button className={`chart-tool volume-toggle ${volume ? 'on' : ''}`} disabled={compareFunds}
+            onClick={() => setVolume(value => !value)} aria-pressed={!compareFunds && volume}>Volume</button>
+        </div>
+        {compareFunds ? <span className="muted tiny">Indexed to first common close</span> : !viewer && <span className="muted tiny">Drag to pan · scroll to zoom</span>}
       </div>
-      {ranked ? <RankedPlot performance={performance} error={performanceError} showDetails={!viewer} light={light} palette={palette}/>
-        : bars.length ? <PriceChart bars={bars} comparisons={compareFunds ? compare : NO_COMPARISONS} symbol={chartSymbol} compareFunds={compareFunds}
+      {bars.length ? <PriceChart bars={bars} comparisons={compareFunds ? compare : NO_COMPARISONS} symbol={fund} compareFunds={compareFunds}
           chartType={chartType} volume={volume} interval={interval} light={light}/>
         : <div className="chart-empty"><Empty title="Waiting for market data"
           description={viewer ? undefined : 'Refresh stored market data from the local workspace. Missing history remains blank.'}/></div>}
@@ -367,14 +362,121 @@ function MarketChart({ viewer, light, palette, sectors }: ChartAppearance & { se
   </>;
 }
 
+function SnapshotData({ viewer, fund, setFund, sectors, interval, setInterval }: FundSelection & { viewer: boolean }) {
+  const { data, error } = useResource(`/bars?symbol=${fund}&interval=${interval}&limit=50`);
+  const bars: Bar[] = data?.bars || [];
+  return <section className="panel data-panel">
+    <SectionTitle title="Market data"/>
+    <div className="chart-mode-controls">
+      <FundSelect fund={fund} setFund={setFund} sectors={sectors}/>
+      <label>Interval
+        <select value={interval} onChange={event => setInterval(event.target.value as Interval)}>
+          <option value="1d">Daily</option>
+          <option value="1h">Hourly</option>
+        </select>
+      </label>
+    </div>
+    {data && <div className="snapshot-data-coverage"><CoverageNote coverage={data.coverage} viewer={viewer}/></div>}
+    {bars.length > 0 ? <>
+      <p className="panel-caption">Latest {bars.length.toLocaleString()} of {data.coverage?.row_count?.toLocaleString() ?? '—'} stored {fund} bars</p>
+      <div className="table-wrap"><table aria-label={`${fund} stored prices`}>
+        <thead><tr><th>{interval === '1h' ? 'TIME (UTC)' : 'DATE'}</th><th>OPEN</th><th>HIGH</th><th>LOW</th><th>CLOSE</th><th>VOLUME</th></tr></thead>
+        <tbody>{[...bars].reverse().map(bar => <tr key={bar.time}>
+          <td><time dateTime={bar.time}>{bar.time.replace('T', ' ').replace(/Z$/, '')}</time></td>
+          <td>{money(bar.open)}</td><td>{money(bar.high)}</td><td>{money(bar.low)}</td><td>{money(bar.close)}</td>
+          <td>{bar.volume.toLocaleString()}</td>
+        </tr>)}</tbody>
+      </table></div>
+    </> : <Empty title={error ? 'Market data unavailable' : data ? 'No stored bars for this selection' : 'Loading market data'}
+      description={viewer ? undefined : error || undefined}/>}
+  </section>;
+}
+
+function SnapshotAnalysis({ active, viewer, light, palette }: ChartAppearance & { active: boolean }) {
+  const [mode, setMode] = useState<RankingMode>('etfs');
+  const [period, setPeriod] = useState<'year' | 'month'>('year');
+  const ranking = useRanking(mode, active ? period : 'history');
+  const { performance, error, rankCount, periodLabel } = ranking;
+  if (!active) return null;
+  return <section className="panel chart-panel" aria-label="Return analysis">
+    <div className="chart-heading">
+      <div>
+        <div className="eyebrow">PERIOD PERFORMANCE</div>
+        <div className="chart-symbol"><h2>{mode === 'market' ? `SPY · ${periodLabel}` : `Top ${rankCount} ETFs · ${periodLabel}`}</h2></div>
+        {mode === 'market' && <div className="chart-price">{pct(performance?.rows[0]?.return_pct)}</div>}
+        <div className="chart-mode-controls">
+          <label>Funds
+            <select value={mode} onChange={event => setMode(event.target.value as RankingMode)}>
+              <option value="etfs">SPY and sector ETFs</option>
+              <option value="market">SPY only</option>
+            </select>
+          </label>
+          <label>Period
+            <select value={period} onChange={event => setPeriod(event.target.value as 'year' | 'month')}>
+              <option value="year">Year</option>
+              <option value="month">Month</option>
+            </select>
+          </label>
+          <RankingControls period={period} mode={mode} ranking={ranking}/>
+        </div>
+      </div>
+      <div className="chart-tools"><RankingTable performance={performance} palette={palette} viewer={viewer}/></div>
+    </div>
+    <div className="chart-toolbar">
+      <span className="soft-badge">DAILY · {period === 'month' ? 'MONTH' : 'YEAR'}</span>
+      <span className="muted tiny">Indexed to the first session close</span>
+    </div>
+    <RankedPlot performance={performance} error={error} showDetails={!viewer} light={light} palette={palette}/>
+  </section>;
+}
+
 export default function Charts() {
   const { state, theme } = useApp();
+  const [tab, setTab] = useState<SnapshotTab>('overview');
+  const [fund, setFund] = useState('SPY');
+  const [interval, setInterval] = useState<Interval>('1d');
   const viewer = pagesBuild || state?.access_scope === 'remote';
   const sectors: Sector[] = state?.sectors || [];
   const light = theme === 'light';
   const palette = light ? LIGHT_COLORS : COLORS;
+  const fundSelection = { fund, setFund, interval, setInterval, sectors };
+
+  function navigateTabs(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    const count = SNAPSHOT_TABS.length;
+    let next: number;
+    switch (event.key) {
+      case 'ArrowLeft': next = (index + count - 1) % count; break;
+      case 'ArrowRight': next = (index + 1) % count; break;
+      case 'Home': next = 0; break;
+      case 'End': next = count - 1; break;
+      default: return;
+    }
+    event.preventDefault();
+    const id = SNAPSHOT_TABS[next].id;
+    setTab(id);
+    event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`#snapshot-tab-${id}`)?.focus();
+  }
+
   return <>
-    <div className="page-heading"><div>{!viewer && <div className="page-kicker"><span className="kicker-line"/> MARKET INTELLIGENCE</div>}<h1>Snapshot<span className="heading-period">.</span></h1>{!viewer && <p className="page-subtitle">See the market from a wider perspective.</p>}</div>{!viewer && <div className="market-tag"><span className="status-dot"/> SPY · S&P 500 ETF</div>}</div>
-    <MarketChart viewer={viewer} light={light} palette={palette} sectors={sectors}/>
+    <div className="page-heading snapshot-heading">
+      <div>{!viewer && <div className="page-kicker"><span className="kicker-line"/> MARKET INTELLIGENCE</div>}
+        <h1>Snapshot<span className="heading-period">.</span></h1>
+        {!viewer && <p className="page-subtitle">See the market from a wider perspective.</p>}
+      </div>
+      <div className="segmented snapshot-tabs" role="tablist" aria-label="Snapshot views">
+        {SNAPSHOT_TABS.map(({ id, label }, index) => <button key={id} type="button" role="tab" id={`snapshot-tab-${id}`}
+          aria-controls={`snapshot-${id}`} aria-selected={tab === id} tabIndex={tab === id ? 0 : -1}
+          className={tab === id ? 'selected' : ''} onClick={() => setTab(id)} onKeyDown={event => navigateTabs(event, index)}>{label}</button>)}
+      </div>
+    </div>
+    <div role="tabpanel" id="snapshot-overview" aria-labelledby="snapshot-tab-overview" tabIndex={0} hidden={tab !== 'overview'}>
+      <MarketChart active={tab === 'overview'} viewer={viewer} light={light} palette={palette} {...fundSelection}/>
+    </div>
+    <div role="tabpanel" id="snapshot-data" aria-labelledby="snapshot-tab-data" tabIndex={0} hidden={tab !== 'data'}>
+      {tab === 'data' && <SnapshotData viewer={viewer} {...fundSelection}/>}
+    </div>
+    <div role="tabpanel" id="snapshot-analysis" aria-labelledby="snapshot-tab-analysis" tabIndex={0} hidden={tab !== 'analysis'}>
+      <SnapshotAnalysis active={tab === 'analysis'} viewer={viewer} light={light} palette={palette}/>
+    </div>
   </>;
 }
