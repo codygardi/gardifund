@@ -140,7 +140,13 @@ label { display:flex; flex-direction:column; gap:7px; color:var(--muted); font-s
 .chart-tools { display:flex; flex-direction:column; gap:12px; min-width:0; }
 .snapshot-heading { flex-wrap:wrap; row-gap:12px; }
 .snapshot-tabs { margin-inline-start:auto; }
-.snapshot-data-coverage { margin-top:16px; }
+.sector-window-controls :is(input,select) { width:105px; }
+.sector-window-results { margin-top:24px; padding-top:16px; border-top:1px solid var(--border); }
+.sector-window-results .table-wrap { margin-top:12px; }
+.sector-window-results :is(th,td):last-child { white-space:nowrap; }
+.calendar-returns { margin-top:16px; }
+.calendar-returns summary { cursor:pointer; padding:16px 24px; font-size:12px; font-weight:700; }
+.calendar-returns[open] summary { border-bottom:1px solid var(--border); }
 @media (max-width:700px) { .chart-heading { grid-template-columns:minmax(0,1fr); } }
 .chart-tools .panel-caption { margin-top:0; }
 .modal label { margin-top:16px; }

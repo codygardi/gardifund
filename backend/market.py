@@ -13,12 +13,13 @@ from functools import lru_cache
 from pathlib import Path
 from threading import RLock
 from typing import Literal, get_args
+from zoneinfo import ZoneInfo
 
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .db import Database
+from .db import Database, SECTORS
 from .audit import compare_daily_closes, yahoo_daily_reference
 from .tradier import ProviderError, Tradier
 
@@ -28,6 +29,18 @@ BAR_INTERVALS = get_args(BarInterval)
 BAR_SCHEMA = pa.schema([("time", pa.string()), ("open", pa.float64()), ("high", pa.float64()),
                         ("low", pa.float64()), ("close", pa.float64()), ("volume", pa.int64())])
 LOCK = RLock()
+MARKET_HISTORY_START = date(2010, 1, 1)
+MARKET_HISTORY_SYMBOLS = frozenset({"SPY", *(symbol for symbol, _ in SECTORS)})
+MARKET_TIMEZONE = ZoneInfo("America/New_York")
+
+
+def history_bounds(symbol):
+    if symbol in MARKET_HISTORY_SYMBOLS:
+        return MARKET_HISTORY_START.isoformat(), datetime.now(MARKET_TIMEZONE).date().isoformat()
+
+
+def history_contains(stamp, bounds):
+    return not bounds or bounds[0] <= stamp[:10] <= bounds[1]
 
 
 @lru_cache(maxsize=32)
@@ -137,8 +150,9 @@ def valid_symbol(symbol):
     return symbol
 
 
-def clean_bars(rows, interval):
+def clean_bars(rows, interval, bounds=None):
     clean, seen = [], set()
+    outside_range = False
     for row in rows:
         raw = str(row.get("time") or row.get("date") or "")
         try:
@@ -149,6 +163,9 @@ def clean_bars(rows, interval):
                 if dt.tzinfo is None:
                     raise ValueError("Intraday times need an explicit timezone")
                 stamp = dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+            if not history_contains(stamp, bounds):
+                outside_range = True
+                continue
             values = [float(row[k]) for k in ("open", "high", "low", "close")]
             volume = int(row["volume"])
         except (ValueError, KeyError, TypeError, OverflowError) as exc:
@@ -160,6 +177,8 @@ def clean_bars(rows, interval):
         seen.add(stamp)
         clean.append({"time": stamp, "open": o, "high": h, "low": l, "close": c, "volume": volume})
     if not clean:
+        if outside_range:
+            raise ValueError("No bars fall within January 2010 through today")
         raise ValueError("No valid bars were supplied")
     return sorted(clean, key=lambda r: r["time"])
 
@@ -179,7 +198,7 @@ class MarketStore:
 
     def audit_spy_daily(self):
         """Compare bounded closes and retain source-declared actions without changing prices."""
-        primary = self.read("SPY", "1d", start="2000-01-01", limit=10000)
+        primary = self.read("SPY", "1d", limit=10000)
         coverage = primary["coverage"]
         if not coverage or not primary["bars"]:
             raise ProviderError("Stored SPY daily bars are required before the adjustment audit")
@@ -232,25 +251,62 @@ class MarketStore:
             self.db.event("database", "adjustment_audited", conn)
         return result
 
+    def enforce_history_window(self):
+        """Trim older prices and diagnostics from the active catalog before startup."""
+        bounds = history_bounds("SPY")
+        symbols = sorted(MARKET_HISTORY_SYMBOLS)
+        placeholders = ",".join("?" for _ in symbols)
+        with LOCK:
+            with self.db.connect() as conn:
+                records = list(conn.execute(f"""SELECT * FROM market_files WHERE symbol IN ({placeholders})
+                    AND (substr(coverage_start,1,10) < ? OR substr(coverage_end,1,10) > ? OR EXISTS (
+                        SELECT 1 FROM market_anomalies AS a WHERE a.symbol=market_files.symbol
+                        AND a.interval=market_files.interval AND substr(a.stamp,1,10) GLOB '????-??-??'
+                        AND substr(a.stamp,1,10) NOT BETWEEN ? AND ?
+                    ))""", (*symbols, *bounds, *bounds)))
+            for record in records:
+                symbol, interval = record["symbol"], record["interval"]
+                old_path = self.resolve_path(record["path"])
+                if not old_path.is_file():
+                    continue  # Keep missing-file diagnostics visible.
+                retained = [row for row in pq.read_table(old_path).to_pylist() if history_contains(row["time"], bounds)]
+                if retained:
+                    self._publish(symbol, interval, retained, record["source"], record["adjustment"], old_path, bounds=bounds)
+                else:
+                    with self.db.connect() as conn:
+                        conn.execute("DELETE FROM market_files WHERE symbol=? AND interval=?", (symbol, interval))
+                        conn.execute("DELETE FROM market_anomalies WHERE symbol=? AND interval=?", (symbol, interval))
+                        self.db.event("charts", "market_updated", conn, {"symbol": symbol, "interval": interval})
+                    self._invalidate(symbol, interval, old_path)
+            with self.db.connect() as conn:
+                conn.execute(f"""DELETE FROM corporate_actions WHERE symbol IN ({placeholders})
+                    AND ex_date NOT BETWEEN ? AND ?""", (*symbols, *bounds))
+                conn.execute(f"""DELETE FROM quality_audits WHERE symbol IN ({placeholders})
+                    AND CASE WHEN json_valid(result) THEN
+                        json_extract(result, '$.primary_start') < ? OR json_extract(result, '$.primary_end') > ?
+                    END""",
+                    (*symbols, *bounds))
+
     def write(self, symbol, interval, rows, source, adjustment, replace=False, anomalies=None):
         symbol = valid_symbol(symbol)
         if interval not in BAR_INTERVALS:
             raise ValueError("Unsupported interval")
         if adjustment not in {"unverified", "split_dividend_adjusted"}:
             raise ValueError("Unsupported adjustment declaration")
-        clean = clean_bars(rows, interval)
+        bounds = history_bounds(symbol)
+        clean = clean_bars(rows, interval, bounds)
+        anomalies = [bad for bad in anomalies or [] if not re.match(r"^\d{4}-\d{2}-\d{2}", bad["stamp"])
+                     or history_contains(bad["stamp"], bounds)]
         with LOCK:
             with self.db.connect() as conn:
                 prior = conn.execute("SELECT * FROM market_files WHERE symbol=? AND interval=?", (symbol, interval)).fetchone()
             if prior and not replace and (prior["source"] != source or prior["adjustment"] != adjustment):
                 raise ValueError("Existing series uses a different source or adjustment; replace explicitly")
-            folder = self.root / interval
-            folder.mkdir(parents=True, exist_ok=True)
             old_path = self.resolve_path(prior["path"]) if prior else None
             if prior and old_path and not old_path.exists() and not replace:
                 raise ValueError("Existing market file is missing; restore a backup or replace explicitly")
             if prior and old_path and old_path.exists() and not replace:
-                old = pq.read_table(old_path).to_pylist()
+                old = [row for row in pq.read_table(old_path).to_pylist() if history_contains(row["time"], bounds)]
                 merged = {r["time"]: r for r in old}
                 merged.update({r["time"]: r for r in clean})
                 for bad in anomalies or []:
@@ -261,67 +317,84 @@ class MarketStore:
                 clean = [row for row in clean if row["time"] not in rejected]
             if not clean:
                 raise ValueError("No valid bars remain after excluding invalid provider rows")
-            missing_sessions, unexpected_sessions = daily_coverage(clean) if interval == "1d" else (None, None)
-            path = folder / f"{symbol}-{uuid.uuid4().hex}.parquet"
-            fd, tmp = tempfile.mkstemp(prefix=".bars-", suffix=".parquet", dir=folder)
-            os.close(fd)
-            try:
-                pq.write_table(pa.Table.from_pylist(clean, schema=BAR_SCHEMA), tmp, compression="zstd")
-                os.replace(tmp, path)
-            finally:
-                if os.path.exists(tmp):
-                    os.unlink(tmp)
-            try:
-                with self.db.connect() as conn:
-                    if replace:
-                        conn.execute("DELETE FROM market_anomalies WHERE symbol=? AND interval=?", (symbol, interval))
-                    conn.executemany("DELETE FROM market_anomalies WHERE symbol=? AND interval=? AND stamp=?",
-                                     [(symbol, interval, row["time"]) for row in clean])
-                    for bad in anomalies or []:
-                        conn.execute("INSERT OR REPLACE INTO market_anomalies VALUES(?,?,?,?,?,?)",
-                                     (symbol, interval, bad["stamp"], bad["reason"], json.dumps(bad["raw"], default=str), time.time()))
-                    anomaly_count = conn.execute("SELECT COUNT(*) FROM market_anomalies WHERE symbol=? AND interval=?", (symbol, interval)).fetchone()[0]
-                    status = ("invalid bars excluded" if anomaly_count else "gaps detected" if missing_sessions else
-                              "non-session dates" if unexpected_sessions else
-                              "partial" if clean[0]["time"][:10] > "2000-01-03" else "coverage begins by 2000")
-                    conn.execute("""INSERT INTO market_files(symbol,interval,source,adjustment,coverage_start,coverage_end,row_count,updated,status,path,anomaly_count,missing_sessions,unexpected_sessions)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-                        ON CONFLICT(symbol,interval) DO UPDATE SET source=excluded.source,adjustment=excluded.adjustment,
-                        coverage_start=excluded.coverage_start,coverage_end=excluded.coverage_end,row_count=excluded.row_count,
-                        updated=excluded.updated,status=excluded.status,path=excluded.path,anomaly_count=excluded.anomaly_count,
-                        missing_sessions=excluded.missing_sessions,unexpected_sessions=excluded.unexpected_sessions""",
-                        (symbol, interval, source[:120], adjustment, clean[0]["time"], clean[-1]["time"],
-                         len(clean), time.time(), status, str(path.relative_to(self.root.parent)), anomaly_count, missing_sessions, unexpected_sessions))
-                    conn.execute("INSERT INTO imports(dataset,source,created,status,message) VALUES(?,?,?,?,?)",
-                                 (f"{symbol} {interval}", source[:120], time.time(), "partial" if anomaly_count else "complete",
-                                  f"{len(clean)} bars stored; {anomaly_count} invalid bars excluded; {missing_sessions if missing_sessions is not None else 'unchecked'} missing sessions"))
-                    if symbol == "SPY" and interval == "1d":
-                        due = time.time() + 5
-                        conn.execute("""UPDATE jobs SET next_run=? WHERE name='adjustments' AND enabled=1
-                                     AND status!='running' AND next_run>?""", (due, due))
-                    self.db.event("charts", "market_updated", conn, {"symbol": symbol, "interval": interval})
-            except BaseException:
-                path.unlink(missing_ok=True)
-                raise
-            for key in list(self.cache):
-                if key[0] == symbol and key[1] == interval:
-                    del self.cache[key]
-            for key in list(self.quality_cache):
-                if key[0] == symbol and key[1] == interval:
-                    del self.quality_cache[key]
-            if old_path and old_path != path:
-                try:
-                    old_path.unlink(missing_ok=True)
-                except OSError:
-                    pass  # A stale generation may remain; it is not referenced by the catalog.
+            return self._publish(symbol, interval, clean, source, adjustment, old_path, replace, anomalies, bounds)
+
+    def _publish(self, symbol, interval, clean, source, adjustment, old_path, replace=False, anomalies=None, bounds=None):
+        """Commit a new Parquet generation and catalog entry while holding LOCK."""
+        folder = self.root / interval
+        folder.mkdir(parents=True, exist_ok=True)
+        missing_sessions, unexpected_sessions = daily_coverage(clean) if interval == "1d" else (None, None)
+        path = folder / f"{symbol}-{uuid.uuid4().hex}.parquet"
+        fd, tmp = tempfile.mkstemp(prefix=".bars-", suffix=".parquet", dir=folder)
+        os.close(fd)
+        try:
+            pq.write_table(pa.Table.from_pylist(clean, schema=BAR_SCHEMA), tmp, compression="zstd")
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        try:
+            with self.db.connect() as conn:
+                if replace:
+                    conn.execute("DELETE FROM market_anomalies WHERE symbol=? AND interval=?", (symbol, interval))
+                elif bounds:
+                    conn.execute("""DELETE FROM market_anomalies WHERE symbol=? AND interval=?
+                        AND substr(stamp,1,10) GLOB '????-??-??' AND substr(stamp,1,10) NOT BETWEEN ? AND ?""",
+                        (symbol, interval, *bounds))
+                conn.executemany("DELETE FROM market_anomalies WHERE symbol=? AND interval=? AND stamp=?",
+                                 [(symbol, interval, row["time"]) for row in clean])
+                for bad in anomalies or []:
+                    conn.execute("INSERT OR REPLACE INTO market_anomalies VALUES(?,?,?,?,?,?)",
+                                 (symbol, interval, bad["stamp"], bad["reason"], json.dumps(bad["raw"], default=str), time.time()))
+                anomaly_count = conn.execute("SELECT COUNT(*) FROM market_anomalies WHERE symbol=? AND interval=?", (symbol, interval)).fetchone()[0]
+                status = ("invalid bars excluded" if anomaly_count else "gaps detected" if missing_sessions else
+                          "non-session dates" if unexpected_sessions else
+                          "partial" if bounds and interval == "1d" and clean[0]["time"] > "2010-01-04" else "stored")
+                conn.execute("""INSERT INTO market_files(symbol,interval,source,adjustment,coverage_start,coverage_end,row_count,updated,status,path,anomaly_count,missing_sessions,unexpected_sessions)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(symbol,interval) DO UPDATE SET source=excluded.source,adjustment=excluded.adjustment,
+                    coverage_start=excluded.coverage_start,coverage_end=excluded.coverage_end,row_count=excluded.row_count,
+                    updated=excluded.updated,status=excluded.status,path=excluded.path,anomaly_count=excluded.anomaly_count,
+                    missing_sessions=excluded.missing_sessions,unexpected_sessions=excluded.unexpected_sessions""",
+                    (symbol, interval, source[:120], adjustment, clean[0]["time"], clean[-1]["time"],
+                     len(clean), time.time(), status, str(path.relative_to(self.root.parent)), anomaly_count, missing_sessions, unexpected_sessions))
+                conn.execute("INSERT INTO imports(dataset,source,created,status,message) VALUES(?,?,?,?,?)",
+                             (f"{symbol} {interval}", source[:120], time.time(), "partial" if anomaly_count else "complete",
+                              f"{len(clean)} bars stored; {anomaly_count} invalid bars excluded; {missing_sessions if missing_sessions is not None else 'unchecked'} missing sessions"))
+                if symbol == "SPY" and interval == "1d":
+                    due = time.time() + 5
+                    conn.execute("""UPDATE jobs SET next_run=? WHERE name='adjustments' AND enabled=1
+                                 AND status!='running' AND next_run>?""", (due, due))
+                self.db.event("charts", "market_updated", conn, {"symbol": symbol, "interval": interval})
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        self._invalidate(symbol, interval, old_path)
         return {"symbol": symbol, "interval": interval, "count": len(clean), "start": clean[0]["time"],
                 "end": clean[-1]["time"], "adjustment": adjustment, "status": status, "anomaly_count": anomaly_count,
                 "missing_sessions": missing_sessions, "unexpected_sessions": unexpected_sessions}
+
+    def _invalidate(self, symbol, interval, old_path):
+        for key in list(self.cache):
+            if key[0] == symbol and key[1] == interval:
+                del self.cache[key]
+        for key in list(self.quality_cache):
+            if key[0] == symbol and key[1] == interval:
+                del self.quality_cache[key]
+        if old_path:
+            try:
+                old_path.unlink(missing_ok=True)
+            except OSError:
+                pass  # A stale generation may remain; it is not referenced by the catalog.
 
     def read(self, symbol, interval, start=None, end=None, limit=12000, before=None):
         symbol = valid_symbol(symbol)
         if interval not in BAR_INTERVALS:
             raise ValueError("Unsupported interval")
+        bounds = history_bounds(symbol)
+        if bounds:
+            start = max(start or "", bounds[0])
+            end = min(end or bounds[1], bounds[1] if interval == "1d" else bounds[1] + "~")
         with LOCK:
             with self.db.connect() as conn:
                 record = conn.execute("SELECT * FROM market_files WHERE symbol=? AND interval=?", (symbol, interval)).fetchone()
@@ -360,7 +433,15 @@ class MarketStore:
         """Read only the requested daily closes, in one batch for the basket."""
         if not symbols or not sessions:
             return {}
+        dates = ",".join("?" for _ in sessions)
+        return self._query_daily_closes(symbols, adjustment, f"time IN ({dates})", sessions)
+
+    def daily_closes_between(self, symbols, start, end):
+        return self._query_daily_closes(symbols, None, "time BETWEEN ? AND ?", (start, end))
+
+    def _query_daily_closes(self, symbols, adjustment, predicate, parameters):
         prices = {}
+        bounds = history_bounds("SPY")
         with LOCK:
             with self.db.connect() as conn:
                 files = [dict(r) for r in conn.execute(
@@ -373,18 +454,19 @@ class MarketStore:
                 if path.is_file():
                     mapping[os.path.normcase(str(path))] = record["symbol"]
             if mapping:
-                dates = ",".join("?" for _ in sessions)
                 con = duckdb.connect(":memory:")
                 try:
-                    rows = con.execute(f"SELECT filename,time,close FROM read_parquet(?, filename=true) WHERE time IN ({dates})",
-                                       [list(mapping), *sessions]).fetchall()
+                    rows = con.execute(f"SELECT filename,time,close FROM read_parquet(?, filename=true) WHERE {predicate}",
+                                       [list(mapping), *parameters]).fetchall()
                 finally:
                     con.close()
                 symbols_by_file = {}
                 for filename, stamp, close in rows:
                     if filename not in symbols_by_file:
                         symbols_by_file[filename] = mapping[os.path.normcase(str(Path(filename).resolve()))]
-                    prices.setdefault(symbols_by_file[filename], {})[stamp] = close
+                    symbol = symbols_by_file[filename]
+                    if symbol not in MARKET_HISTORY_SYMBOLS or history_contains(stamp, bounds):
+                        prices.setdefault(symbol, {})[stamp] = close
         return prices
 
     def quality(self, symbol, interval, limit=200):
@@ -451,20 +533,25 @@ class MarketStore:
         return self.write(symbol, interval, rows, source, adjustment, replace)
 
     def refresh_daily(self, adapter: Tradier, symbol):
+        symbol = valid_symbol(symbol)
         with self.db.connect() as conn:
             prior = conn.execute("SELECT * FROM market_files WHERE symbol=? AND interval='1d'", (symbol,)).fetchone()
         if prior and (prior["source"] != "Tradier" or prior["adjustment"] != "unverified"):
             return None
-        start = "2000-01-01"
+        bounds = history_bounds(symbol)
+        first, end = bounds or ("2000-01-01", datetime.now(MARKET_TIMEZONE).date().isoformat())
+        start = first
         if prior and prior["coverage_end"]:
-            start = (date.fromisoformat(prior["coverage_end"][:10]) - timedelta(days=10)).isoformat()
-        end = date.today().isoformat()
+            overlap = (date.fromisoformat(prior["coverage_end"][:10]) - timedelta(days=10)).isoformat()
+            start = min(end, max(first, overlap))
         rows = adapter.daily(symbol, start, end)
         if not rows:
             raise ProviderError(f"No daily bars returned for {symbol}")
         valid, anomalies, seen = [], [], set()
         for row in rows:
             stamp = str(row.get("date") or "unknown")
+            if re.match(r"^\d{4}-\d{2}-\d{2}", stamp) and not history_contains(stamp, bounds):
+                continue
             try:
                 cleaned = clean_bars([row], "1d")[0]
                 if cleaned["time"] in seen:
@@ -486,10 +573,15 @@ class MarketStore:
             return None
         # Yahoo's lookback is limited. Persist accumulated bars; do not fill earlier gaps.
         max_days = 729
+        today = datetime.now(MARKET_TIMEZONE).date()
+        if symbol in MARKET_HISTORY_SYMBOLS:
+            max_days = min(max_days, (today - MARKET_HISTORY_START).days)
+            if max_days < 1:
+                raise ProviderError("No hourly lookback is available within the retained market history")
         days = max_days
         if prior and prior["coverage_end"]:
             latest = date.fromisoformat(prior["coverage_end"][:10])
-            days = min(max_days, max(5, (date.today() - latest).days + 5))
+            days = min(max_days, max(5, (today - latest).days + 5))
         frame = yf.Ticker(symbol).history(period=f"{days}d", interval=interval,
                                           auto_adjust=False, actions=False, prepost=False, timeout=20, raise_errors=True)
         if frame.empty:

@@ -15,6 +15,8 @@ from types import SimpleNamespace
 
 import httpx
 import jwt
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 import uvicorn
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -26,7 +28,7 @@ from backend.db import Database
 from backend.discovery import MarketDiscovery
 from backend.quotes import trade_timestamp
 from backend.main import create_app
-from backend.market import MarketStore, daily_coverage, intraday_gaps
+from backend.market import BAR_SCHEMA, MarketStore, daily_coverage, intraday_gaps
 from backend.services import store_holdings, sync_accounts
 from backend.tradier import Tradier
 from backend.worker import Worker
@@ -237,6 +239,9 @@ def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkey
         assert ranking.json()['rows'][0]['return_pct'] == pytest.approx((104 / 101 - 1) * 100)
         assert client.get('/view/chart-performance?mode=market&year=2024&top_n=6', headers=auth).status_code == 422
         assert client.get('/view/chart-performance?mode=market&year=2024').status_code == 401
+        rolling = client.get('/view/chart-performance?mode=sector_windows&trading_days=5&lookback_years=1&top_n=2', headers=auth)
+        assert rolling.status_code == 200 and rolling.json()['trading_days'] == 5
+        assert client.get('/view/chart-performance?mode=sector_windows&top_n=4', headers=auth).status_code == 422
         views = (live, simulated, ranking, client.get('/view/state', headers=auth), client.get('/view/bars', headers=auth))
         for response in views:
             assert response.status_code == 200
@@ -580,12 +585,14 @@ def test_importing_application_module_does_not_create_user_data(tmp_path):
 
 def test_validated_import_and_backup(setup):
     app, client = setup
-    payload = 'time,open,high,low,close,volume\n2000-01-03,10,12,9,11,100\n2000-01-04,11,13,10,12,200\n'
+    payload = ('time,open,high,low,close,volume\n2009-12-31,10,12,9,11,100\n2010-01-04,10,12,9,11,100\n'
+               '2010-01-05,11,13,10,12,200\n2099-01-01,11,13,10,12,200\n')
     form = {'symbol':'SPY','interval':'1d','source':'Licensed provider','adjustment':'split_dividend_adjusted','replace':'false'}
     result = mutate(client,'POST','/api/import/bars',data=form,files={'file':('bars.csv',payload,'text/csv')})
     assert result.status_code == 200
     assert client.get('/api/bars?symbol=SPY&interval=1d').json()['coverage']['row_count'] == 2
-    bad = 'time,open,high,low,close,volume\n2000-01-05,11,10,9,12,200\n'
+    assert result.json()['start'] == '2010-01-04' and result.json()['end'] == '2010-01-05'
+    bad = 'time,open,high,low,close,volume\n2010-01-06,11,10,9,12,200\n'
     assert mutate(client,'POST','/api/import/bars',data=form,files={'file':('bad.csv',bad,'text/csv')}).status_code == 400
     assert client.get('/api/database').json()['imports'][0]['status'] == 'failed'
     assert client.get('/api/bars?symbol=SPY&interval=1d').json()['coverage']['row_count'] == 2
@@ -616,12 +623,58 @@ def test_validated_import_and_backup(setup):
 
 def test_corporate_actions_import_validation(setup):
     _, client = setup
-    content = 'symbol,ex_date,action,value\nAAA,2024-01-02,split,2\nAAA,2024-02-02,dividend,0.5\n'
+    content = 'symbol,ex_date,action,value\nAAA,2009-12-31,split,2\nSPY,2009-12-31,split,2\nSPY,2024-02-02,dividend,0.5\n'
     response = mutate(client, 'POST', '/api/import/actions', data={'source':'licensed'}, files={'file':('actions.csv',content,'text/csv')})
-    assert response.status_code == 200 and response.json()['count'] == 2
+    assert response.status_code == 200 and response.json() == {'count': 2, 'excluded': 1}
     bad = 'symbol,ex_date,action,value\nAAA,2024-01-02,split,-1\n'
     assert mutate(client, 'POST', '/api/import/actions', data={'source':'licensed'}, files={'file':('actions.csv',bad,'text/csv')}).status_code == 400
     assert client.get('/api/database').json()['counts']['corporate_actions'] == 2
+
+
+def test_startup_trims_existing_market_files_without_touching_other_symbols(tmp_path):
+    app = create_app(config(tmp_path), adapter=FakeTradier())
+    db, market = app.state.db, app.state.market
+
+    def legacy(symbol, interval, stamps):
+        path = market.root / interval / f'{symbol}-legacy.parquet'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.Table.from_pylist([
+            {'time': stamp, 'open': 10, 'high': 10, 'low': 10, 'close': 10, 'volume': 1} for stamp in stamps
+        ], schema=BAR_SCHEMA), path)
+        with db.connect() as conn:
+            conn.execute("""INSERT INTO market_files(symbol,interval,source,adjustment,coverage_start,coverage_end,
+                row_count,updated,status,path) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (symbol, interval, 'fixture', 'unverified', stamps[0], stamps[-1], len(stamps), 1, 'stored',
+                 str(path.relative_to(tmp_path))))
+        return path
+
+    old_spy = legacy('SPY', '1d', ['2009-12-31', '2010-01-04', '2010-01-05', '2099-01-01'])
+    old_xlk = legacy('XLK', '1h', ['2009-12-31T14:30:00Z'])
+    other = legacy('QQQ', '1d', ['2009-12-31'])
+    with db.connect() as conn:
+        conn.executemany("INSERT INTO corporate_actions VALUES(?,?,?,?,?)", [
+            ('SPY', '2009-12-31', 'dividend', .5, 'fixture'), ('SPY', '2010-01-04', 'dividend', .5, 'fixture'),
+            ('QQQ', '2009-12-31', 'dividend', .5, 'fixture')])
+        conn.execute("INSERT INTO market_anomalies VALUES(?,?,?,?,?,?)", ('SPY', '1d', '2009-12-30', 'invalid', '{}', 1))
+        conn.execute("INSERT INTO quality_audits(symbol,interval,primary_updated,audited,reference,result) VALUES(?,?,?,?,?,?)",
+                     ('SPY', '1d', 1, 2, 'fixture', '{"primary_start":"2009-12-31","primary_end":"2010-01-05"}'))
+
+    with TestClient(app, base_url='http://localhost:8765', client=('127.0.0.1', 1234)) as client:
+        prices = client.get('/api/bars?symbol=SPY&start=2000-01-01').json()
+        assert [row['time'] for row in prices['bars']] == ['2010-01-04', '2010-01-05']
+        assert prices['coverage']['coverage_start'] == '2010-01-04' and prices['coverage']['row_count'] == 2
+        assert client.get('/api/bars?symbol=XLK&interval=1h').json()['coverage'] is None
+    assert not old_spy.exists() and not old_xlk.exists() and other.exists()
+    with db.connect() as conn:
+        path = conn.execute("SELECT path FROM market_files WHERE symbol='SPY'").fetchone()['path']
+        assert [tuple(row) for row in conn.execute("SELECT symbol,ex_date FROM corporate_actions ORDER BY symbol")] == [
+            ('QQQ', '2009-12-31'), ('SPY', '2010-01-04')]
+        assert conn.execute("SELECT count(*) FROM market_anomalies").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM quality_audits").fetchone()[0] == 0
+    assert pq.read_table(market.resolve_path(path))['time'].to_pylist() == ['2010-01-04', '2010-01-05']
+    market.enforce_history_window()
+    with db.connect() as conn:
+        assert conn.execute("SELECT path FROM market_files WHERE symbol='SPY'").fetchone()['path'] == path
 
 
 def test_corporate_action_pagination_preserves_same_date_events(setup):
@@ -677,9 +730,11 @@ def test_invalid_provider_bars_are_quarantined_and_repaired(tmp_path):
     db = Database(tmp_path/'data.sqlite3'); market = MarketStore(db,tmp_path)
     class Provider:
         def __init__(self): self.bad = True
-        def daily(self,*args):
-            return [{'date':'2000-01-03','open':10,'high':12,'low':9,'close':11,'volume':100},
-                    {'date':'2000-01-04','open':10,'high':10 if self.bad else 12,'low':9,'close':11,'volume':100}]
+        def daily(self, symbol, start, end):
+            assert symbol == 'SPY' and start == '2010-01-01'
+            return [{'date':'2009-12-31','open':10,'high':10,'low':9,'close':11,'volume':100},
+                    {'date':'2010-01-04','open':10,'high':12,'low':9,'close':11,'volume':100},
+                    {'date':'2010-01-05','open':10,'high':10 if self.bad else 12,'low':9,'close':11,'volume':100}]
     provider=Provider()
     result = market.refresh_daily(provider,'SPY')
     assert result['count'] == 1 and result['anomaly_count'] == 1

@@ -21,14 +21,14 @@ from . import shadow
 from .config import ROOT, Settings
 from .db import Database, SECTORS
 from .discovery import MarketDiscovery
-from .market import BAR_INTERVALS, LOCK, BarInterval, MarketStore, valid_symbol
+from .market import BAR_INTERVALS, LOCK, MARKET_HISTORY_SYMBOLS, BarInterval, MarketStore, history_bounds, history_contains, valid_symbol
 from .security import AccessGuard
 from .setup_lock import LiveSetupLock
 from .services import SECTOR_NAMES, attribution, discovery_rows, enrich_positions, sector_day_moves, store_holdings
 from .tradier import Tradier, ProviderError
 from .worker import Worker
 from .execution import regular_session
-from .performance import PerformanceMode, PeriodPerformance
+from .performance import MAX_WINDOW_DAYS, PerformanceMode, PeriodPerformance
 
 
 class SettingsUpdate(BaseModel):
@@ -86,6 +86,7 @@ def create_app(settings: Settings | None = None, adapter=None):
 
     @asynccontextmanager
     async def lifespan(_app):
+        market.enforce_history_window()
         if settings.start_worker:
             worker.start()
         yield
@@ -317,9 +318,17 @@ def create_app(settings: Settings | None = None, adapter=None):
 
     @app.get("/api/chart-performance")
     @app.get("/view/chart-performance", include_in_schema=False)
-    def chart_performance(mode: PerformanceMode, year: int = Query(ge=2000, le=2100),
-                          month: int | None = Query(None, ge=1, le=12), top_n: int = Query(5, ge=1, le=5)):
-        return performance.get(mode, year, month, top_n)
+    def chart_performance(mode: PerformanceMode | Literal["sector_windows"], year: int | None = Query(None, ge=2000, le=2100),
+                          month: int | None = Query(None, ge=1, le=12), top_n: int | None = Query(None, ge=1, le=5),
+                          trading_days: int = Query(20, ge=1, le=MAX_WINDOW_DAYS),
+                          lookback_years: int = Query(16, ge=1)):
+        if mode == "sector_windows":
+            if top_n is not None and top_n > 3:
+                raise HTTPException(status_code=422, detail="Choose 1–3 sectors.")
+            return performance.sector_windows(trading_days, lookback_years, top_n or 3)
+        if year is None:
+            raise HTTPException(status_code=422, detail="Choose a year for calendar returns.")
+        return performance.get(mode, year, month, top_n or 5)
 
     @app.get("/api/attribution")
     def attribution_api(start: str, end: str, sector: str = "", limit: int = Query(10, ge=1, le=50)):
@@ -456,6 +465,8 @@ def create_app(settings: Settings | None = None, adapter=None):
         content = await file.read(5 * 1024 * 1024 + 1)
         if len(content) > 5 * 1024 * 1024 or not source.strip():
             raise ValueError("A source and CSV under 5 MB are required")
+        bounds = history_bounds("SPY")
+        excluded = 0
         try:
             rows = list(csv.DictReader(io.StringIO(content.decode("utf-8-sig"))))
             if not rows or len(rows) > 50000:
@@ -464,6 +475,9 @@ def create_app(settings: Settings | None = None, adapter=None):
             for row in rows:
                 symbol = valid_symbol(row["symbol"])
                 day = date.fromisoformat(row["ex_date"]).isoformat()
+                if symbol in MARKET_HISTORY_SYMBOLS and not history_contains(day, bounds):
+                    excluded += 1
+                    continue
                 action = row["action"].lower()
                 value = float(row["value"])
                 key = (symbol, day, action)
@@ -473,12 +487,15 @@ def create_app(settings: Settings | None = None, adapter=None):
                 clean.append((*key, value, source.strip()[:120]))
         except (UnicodeDecodeError, KeyError):
             raise ValueError("Invalid corporate actions CSV; see import documentation") from None
+        if not clean:
+            raise ValueError("No actions fall within January 2010 through today")
         with db.connect() as conn:
             conn.executemany("INSERT OR REPLACE INTO corporate_actions VALUES(?,?,?,?,?)", clean)
             conn.execute("INSERT INTO imports(dataset,source,created,status,message) VALUES(?,?,?,?,?)",
-                         ("Corporate actions", source.strip()[:120], time.time(), "complete", f"{len(clean)} source-declared actions imported"))
+                         ("Corporate actions", source.strip()[:120], time.time(), "complete",
+                          f"{len(clean)} source-declared actions imported; {excluded} outside retained market history"))
             db.event("database", "actions_imported", conn)
-        return {"count": len(clean)}
+        return {"count": len(clean), "excluded": excluded}
 
     @app.get("/api/backups")
     def backups():

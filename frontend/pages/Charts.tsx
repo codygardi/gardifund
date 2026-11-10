@@ -2,17 +2,18 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { createChart, ColorType, CrosshairMode, Time } from 'lightweight-charts';
 import { BarChart3, LineChart } from 'lucide-react';
 import { api, money, pagesBuild, pct, useApp, useResource } from '../api';
-import { Empty, ErrorNote, SectionTitle, Segmented, Tip } from '../ui';
+import { Empty, ErrorNote, Segmented, Tip } from '../ui';
 
 const COLORS = ['#a6d68a','#dfb76e','#89b9c7','#d295a1','#bb9cce','#d8cf8a','#87c6a4','#df9579','#9bafe4','#d5a4cb','#8fb9a5'];
 const LIGHT_COLORS = ['#387349','#9a6720','#327387','#a64d61','#75548a','#827520','#35785d','#a35439','#485e9a','#935482','#4d7564'];
 const EMPTY_BARS: any[] = [];
 const chartTime = (s: string): Time => (s.length === 10 ? s : Math.floor(new Date(s).getTime() / 1000)) as Time;
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const FIRST_HISTORY_YEAR = 2010;
+const MAX_WINDOW_DAYS = 5000;
 
 const SNAPSHOT_TABS = [
   { id: 'overview', label: 'Overview' },
-  { id: 'data', label: 'Data' },
   { id: 'analysis', label: 'Analysis' },
 ] as const;
 
@@ -25,8 +26,12 @@ type PerformanceRow = { symbol: string; name: string; return_pct: number };
 type Performance = { start: string | null; end: string | null; rows: PerformanceRow[];
   series: Omit<ChartSeries, 'color'>[]; complete: boolean; basis: string | null; message: string };
 type Sector = { symbol: string; name: string };
-type Bar = { time: string; open: number; high: number; low: number; close: number; volume: number };
 type Coverage = { source: string; coverage_start: string; coverage_end: string; row_count: number; adjustment: string };
+type SectorWindows = {
+  start: string | null; end: string | null; basis: string | null; message: string | null;
+  ranked: number; missing: number; incompatible: number; possible_windows: number;
+  rows: (PerformanceRow & { window_count: number; window_start: string; window_end: string })[];
+};
 const NO_COMPARISONS: ChartSeries[] = [];
 
 function storedRankCount(key: string) {
@@ -66,7 +71,7 @@ function RankingControls({ period, mode, ranking }: {
   return <>
     <label>Year
       <select value={ranking.year} onChange={e => ranking.setYear(e.target.value)}>
-        {Array.from({length: ranking.currentYear - 1999}, (_, index) => ranking.currentYear - index)
+        {Array.from({length: ranking.currentYear - FIRST_HISTORY_YEAR + 1}, (_, index) => ranking.currentYear - index)
           .map(value => <option key={value} value={value}>{value}</option>)}
       </select>
     </label>
@@ -362,43 +367,76 @@ function MarketChart({ active, viewer, light, palette, sectors, fund, setFund, i
   </>;
 }
 
-function SnapshotData({ viewer, fund, setFund, sectors, interval, setInterval }: FundSelection & { viewer: boolean }) {
-  const { data, error } = useResource(`/bars?symbol=${fund}&interval=${interval}&limit=50`);
-  const bars: Bar[] = data?.bars || [];
-  return <section className="panel data-panel">
-    <SectionTitle title="Market data"/>
-    <div className="chart-mode-controls">
-      <FundSelect fund={fund} setFund={setFund} sectors={sectors}/>
-      <label>Interval
-        <select value={interval} onChange={event => setInterval(event.target.value as Interval)}>
-          <option value="1d">Daily</option>
-          <option value="1h">Hourly</option>
-        </select>
-      </label>
-    </div>
-    {data && <div className="snapshot-data-coverage"><CoverageNote coverage={data.coverage} viewer={viewer}/></div>}
-    {bars.length > 0 ? <>
-      <p className="panel-caption">Latest {bars.length.toLocaleString()} of {data.coverage?.row_count?.toLocaleString() ?? '—'} stored {fund} bars</p>
-      <div className="table-wrap"><table aria-label={`${fund} stored prices`}>
-        <thead><tr><th>{interval === '1h' ? 'TIME (UTC)' : 'DATE'}</th><th>OPEN</th><th>HIGH</th><th>LOW</th><th>CLOSE</th><th>VOLUME</th></tr></thead>
-        <tbody>{[...bars].reverse().map(bar => <tr key={bar.time}>
-          <td><time dateTime={bar.time}>{bar.time.replace('T', ' ').replace(/Z$/, '')}</time></td>
-          <td>{money(bar.open)}</td><td>{money(bar.high)}</td><td>{money(bar.low)}</td><td>{money(bar.close)}</td>
-          <td>{bar.volume.toLocaleString()}</td>
-        </tr>)}</tbody>
-      </table></div>
-    </> : <Empty title={error ? 'Market data unavailable' : data ? 'No stored bars for this selection' : 'Loading market data'}
-      description={viewer ? undefined : error || undefined}/>}
-  </section>;
+function SnapshotAnalysis({ active, viewer, light, palette }: ChartAppearance & { active: boolean }) {
+  const maxYears = new Date().getFullYear() - FIRST_HISTORY_YEAR + 1;
+  const [days, setDays] = useState('20');
+  const [years, setYears] = useState(() => String(Math.min(maxYears, 16)));
+  const [top, setTop] = useState('3');
+  const [selection, setSelection] = useState(() => ({ days, years, top }));
+  const [showCalendar, setShowCalendar] = useState(false);
+  const query = new URLSearchParams({ mode: 'sector_windows', trading_days: selection.days,
+    lookback_years: selection.years, top_n: selection.top });
+  const { data, error } = useResource(active ? `/chart-performance?${query}` : null);
+  const results = data as SectorWindows | null;
+  if (!active) return null;
+  return <>
+    <section className="panel chart-panel" aria-label="Rolling sector returns">
+      <div className="eyebrow">ROLLING RETURNS</div>
+      <div className="chart-symbol"><h2>Top sectors</h2>
+        <Tip text="Sector ETFs represent the sectors. Each window measures close to close, from the start date to the close the selected number of NYSE sessions later. The ranking averages all valid windows."/>
+      </div>
+      <form className="chart-mode-controls sector-window-controls" onSubmit={event => {
+        event.preventDefault();
+        setSelection({ days, years, top });
+      }}>
+        <label>Top sectors
+          <select value={top} onChange={event => setTop(event.target.value)}>
+            {[1, 2, 3].map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+        <label>Trading days
+          <input type="number" min={1} max={MAX_WINDOW_DAYS} step={1} required value={days} onChange={event => setDays(event.target.value)}/>
+        </label>
+        <label>Lookback years
+          <input type="number" min={1} max={maxYears} step={1} required value={years} onChange={event => setYears(event.target.value)}/>
+        </label>
+        <button className="button primary" type="submit">Calculate</button>
+      </form>
+      <div className="sector-window-results" aria-live="polite" aria-busy={!error && !results}>
+        {error ? <ErrorNote text={viewer ? 'Sector analysis is unavailable.' : error}/> : results?.rows.length ? <>
+          <p className="muted small">{selection.days} trading days · {results.start} to {results.end} · {results.ranked} sector ETFs compared</p>
+          <div className="table-wrap"><table aria-label="Sector ETF rankings">
+            <thead><tr><th scope="col">RANK</th><th scope="col">SECTOR ETF</th><th scope="col">AVERAGE RETURN</th><th scope="col">WINDOWS</th><th scope="col">SAMPLE DATES</th></tr></thead>
+            <tbody>{results.rows.map((row, index) => <tr key={row.symbol}>
+              <td>{index + 1}</td>
+              <td><strong>{row.name}</strong> <span className="ticker-label">{row.symbol}</span></td>
+              <td className={row.return_pct >= 0 ? 'positive' : 'negative'}>{pct(row.return_pct)}</td>
+              <td>{row.window_count.toLocaleString()} / {results.possible_windows.toLocaleString()}</td>
+              <td><time dateTime={row.window_start}>{row.window_start}</time> to <time dateTime={row.window_end}>{row.window_end}</time></td>
+            </tr>)}</tbody>
+          </table></div>
+          <p className="panel-caption">
+            {results.basis === 'unverified' ? 'Price returns; adjustments unverified.' : 'Provider-declared split and dividend adjustments.'}
+            {' '}Windows with missing closes are skipped, so sample dates can differ.
+            {results.missing > 0 && ` ${results.missing} ETFs lacked a complete window.`}
+            {results.incompatible > 0 && ` ${results.incompatible} ETFs used a different adjustment basis.`}
+          </p>
+        </> : <Empty title={results ? 'No comparable windows' : 'Calculating sector returns'} description={results?.message ?? undefined}/>}
+      </div>
+    </section>
+    <details className="panel calendar-returns" open={showCalendar} onToggle={event => setShowCalendar(event.currentTarget.open)}>
+      <summary>Calendar returns</summary>
+      {showCalendar && <SnapshotCalendarAnalysis viewer={viewer} light={light} palette={palette}/>}
+    </details>
+  </>;
 }
 
-function SnapshotAnalysis({ active, viewer, light, palette }: ChartAppearance & { active: boolean }) {
+function SnapshotCalendarAnalysis({ viewer, light, palette }: ChartAppearance) {
   const [mode, setMode] = useState<RankingMode>('etfs');
   const [period, setPeriod] = useState<'year' | 'month'>('year');
-  const ranking = useRanking(mode, active ? period : 'history');
+  const ranking = useRanking(mode, period);
   const { performance, error, rankCount, periodLabel } = ranking;
-  if (!active) return null;
-  return <section className="panel chart-panel" aria-label="Return analysis">
+  return <section className="chart-panel" aria-label="Calendar return analysis">
     <div className="chart-heading">
       <div>
         <div className="eyebrow">PERIOD PERFORMANCE</div>
@@ -471,9 +509,6 @@ export default function Charts() {
     </div>
     <div role="tabpanel" id="snapshot-overview" aria-labelledby="snapshot-tab-overview" tabIndex={0} hidden={tab !== 'overview'}>
       <MarketChart active={tab === 'overview'} viewer={viewer} light={light} palette={palette} {...fundSelection}/>
-    </div>
-    <div role="tabpanel" id="snapshot-data" aria-labelledby="snapshot-tab-data" tabIndex={0} hidden={tab !== 'data'}>
-      {tab === 'data' && <SnapshotData viewer={viewer} {...fundSelection}/>}
     </div>
     <div role="tabpanel" id="snapshot-analysis" aria-labelledby="snapshot-tab-analysis" tabIndex={0} hidden={tab !== 'analysis'}>
       <SnapshotAnalysis active={tab === 'analysis'} viewer={viewer} light={light} palette={palette}/>

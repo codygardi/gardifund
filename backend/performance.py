@@ -1,20 +1,23 @@
 """Bounded rankings for SPY, its sector funds and dated constituent baskets."""
+from calendar import monthrange
 from collections import OrderedDict, defaultdict
 from datetime import datetime, timezone
-from math import isfinite
+from math import fsum, isfinite
 from threading import RLock
 from typing import Literal
 import time
 
 from .db import SECTORS
-from .market import LOCK, nyse_session_hours
+from .market import LOCK, MARKET_HISTORY_START, MARKET_TIMEZONE, nyse_session_hours
 
 
 PerformanceMode = Literal["market", "sectors", "etfs", "stocks"]
+MAX_WINDOW_DAYS = 5000
 ADJUSTED = "split_dividend_adjusted"
 UNVERIFIED = "unverified"
 SPY = {"symbol": "SPY", "name": "SPDR S&P 500 ETF Trust", "sector": None}
 SECTOR_FUNDS = [{"symbol": symbol, "name": sector, "sector": sector} for symbol, sector in SECTORS]
+SECTOR_SYMBOLS = {fund["symbol"] for fund in SECTOR_FUNDS}
 
 
 class PeriodPerformance:
@@ -23,11 +26,20 @@ class PeriodPerformance:
         self.cache = OrderedDict()
         self.lock = RLock()
 
+    def _cached(self, key, calculate):
+        if key not in self.cache:
+            self.cache[key] = calculate()
+            while len(self.cache) > 8:
+                self.cache.popitem(last=False)
+        self.cache.move_to_end(key)
+        return self.cache[key]
+
     def get(self, mode: PerformanceMode, year: int, month: int | None = None, top_n: int = 5):
         now = self.clock()
         today = datetime.fromtimestamp(now, timezone.utc)
-        if not 2000 <= year <= today.year or not 1 <= top_n <= 5:
-            raise ValueError("Choose a year from 2000 onward and a Top N from 1–5.")
+        first_year = MARKET_HISTORY_START.year if mode in {"market", "etfs"} else 2000
+        if not first_year <= year <= today.year or not 1 <= top_n <= 5:
+            raise ValueError(f"Choose a year from {first_year} onward and a Top N from 1–5.")
         if month is not None and (not 1 <= month <= 12 or (year, month) > (today.year, today.month)):
             raise ValueError("Choose a month that has started.")
         prefix = f"{year:04d}-" if month is None else f"{year:04d}-{month:02d}-"
@@ -60,14 +72,73 @@ class PeriodPerformance:
                 "SELECT symbol, updated, adjustment FROM market_files WHERE interval='1d' ORDER BY symbol"
             ) if row["symbol"] in symbols)
             key = (mode, year, month, start, end, snapshot["imported"] if snapshot else None, generations)
-            if key not in self.cache:
-                self.cache[key] = (self._rank_sectors(period, members, sessions, snapshot) if mode == "sectors"
-                                   else self._rank(period, members, symbols, generations, set(sessions), snapshot))
-                while len(self.cache) > 8:
-                    self.cache.popitem(last=False)
-            self.cache.move_to_end(key)
-            result = self.cache[key]
+            result = self._cached(key, lambda: self._rank_sectors(period, members, sessions, snapshot) if mode == "sectors"
+                                  else self._rank(period, members, symbols, generations, set(sessions), snapshot))
             return {**result, "rows": result["rows"][:top_n], "series": result["series"][:top_n]}
+
+    def sector_windows(self, trading_days: int, lookback_years: int, top_n: int):
+        now = self.clock()
+        today = datetime.fromtimestamp(now, MARKET_TIMEZONE).date()
+        max_years = today.year - MARKET_HISTORY_START.year + 1
+        if not (1 <= trading_days <= MAX_WINDOW_DAYS and 1 <= lookback_years <= max_years and 1 <= top_n <= 3):
+            raise ValueError(f"Choose 1–{MAX_WINDOW_DAYS} trading days, 1–{max_years} years, and 1–3 sectors.")
+        year = today.year - lookback_years
+        start = (MARKET_HISTORY_START if year < MARKET_HISTORY_START.year else
+                 today.replace(year=year, day=min(today.day, monthrange(year, today.month)[1])))
+        first_day = start.isoformat()
+        sessions = [day for day, _, closing in nyse_session_hours(start.year, today.year)
+                    if day >= first_day and closing.timestamp() <= now]
+        period = {"start": sessions[0] if sessions else None, "end": sessions[-1] if sessions else None,
+                  "trading_days": trading_days, "lookback_years": lookback_years,
+                  "possible_windows": max(0, len(sessions) - trading_days)}
+        if not period["possible_windows"]:
+            return {**period, "rows": [], "basis": None, "ranked": 0, "missing": len(SECTOR_FUNDS), "incompatible": 0,
+                    "message": f"{trading_days} trading days requires {trading_days + 1} completed sessions; "
+                               f"{len(sessions)} fall within this lookback."}
+        with self.lock, LOCK, self.db.connect() as conn:
+            generations = tuple(tuple(row) for row in conn.execute(
+                "SELECT symbol, updated, adjustment FROM market_files WHERE interval='1d' ORDER BY symbol"
+            ) if row["symbol"] in SECTOR_SYMBOLS)
+            key = ("sector_windows", trading_days, lookback_years, period["start"], period["end"], generations)
+            result = self._cached(key, lambda: self._rank_sector_windows(period, sessions, generations))
+            return {**result, "rows": result["rows"][:top_n]}
+
+    def _rank_sector_windows(self, period, sessions, generations):
+        days = period["trading_days"]
+        prices = self.market.daily_closes_between(SECTOR_SYMBOLS, sessions[0], sessions[-1])
+        basis_by_symbol = {symbol: adjustment for symbol, _, adjustment in generations}
+        groups = {ADJUSTED: [], UNVERIFIED: []}
+        for fund in SECTOR_FUNDS:
+            symbol = fund["symbol"]
+            basis = basis_by_symbol.get(symbol)
+            if basis not in groups:
+                continue
+            closes = prices.get(symbol, {})
+            returns, streak, first, last = [], 0, None, None
+            for index, day in enumerate(sessions):
+                close = closes.get(day)
+                if close is None or not isfinite(close) or close <= 0:
+                    streak = 0
+                    continue
+                streak += 1
+                if streak <= days:
+                    continue
+                previous = sessions[index - days]
+                change = (close / closes[previous] - 1) * 100
+                if isfinite(change):
+                    returns.append(change)
+                    first, last = first or previous, day
+            if returns:
+                count = len(returns)
+                groups[basis].append({**fund, "return_pct": fsum(value / count for value in returns),
+                                      "window_count": count, "window_start": first, "window_end": last})
+
+        basis = ADJUSTED if len(groups[ADJUSTED]) >= len(groups[UNVERIFIED]) else UNVERIFIED
+        ranked = sorted(groups[basis], key=lambda row: (-row["return_pct"], row["symbol"]))
+        incompatible = len(groups[UNVERIFIED if basis == ADJUSTED else ADJUSTED])
+        return {**period, "rows": ranked, "basis": basis if ranked else None, "ranked": len(ranked),
+                "missing": len(SECTOR_FUNDS) - len(ranked) - incompatible, "incompatible": incompatible,
+                "message": None if ranked else "No sector ETF has enough consecutive daily closes for this window."}
 
     def _rank_sectors(self, period, members, sessions, snapshot):
         start, end = period["start"], period["end"]

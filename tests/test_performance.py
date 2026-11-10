@@ -122,3 +122,38 @@ def test_sector_ranking_uses_dated_weights_and_never_fills_missing_stock_prices(
     result = performance.get("sectors", 2024, month=2, top_n=1)
     assert result["rows"][0]["name"] == "Energy"
     assert result["rows"][0]["return_pct"] == pytest.approx(12.5)
+
+
+def test_sector_windows_rank_mean_returns_and_skip_gaps_and_unfinished_sessions(tmp_path):
+    _, market, performance = workspace(tmp_path, "2024-01-10T16:00:00+00:00")
+    sessions = ("2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08", "2024-01-09", "2024-01-10")
+    daily(market, "XLK", dict(zip(sessions, (100, 100, 110, 110, 121, 121, 1000))))
+    daily(market, "XLE", dict(zip(sessions, (100, 100, 200, 100, 50, 100, 100))))
+    daily(market, "XLP", {sessions[0]: 1, sessions[2]: 100, sessions[3]: 106, sessions[4]: 104, sessions[6]: 900})
+    daily(market, "XLF", dict(zip(sessions, (1, 1, 100, 100, 1000, 1000))), "split_dividend_adjusted")
+    daily(market, "SPY", dict(zip(sessions, (1, 1, 100, 100, 1000, 1000))))
+
+    ranked = performance.sector_windows(2, 1, 3)
+    assert ranked["end"] == "2024-01-09" and ranked["basis"] == "unverified"
+    assert ranked["ranked"] == 3 and ranked["incompatible"] == 1 and ranked["missing"] == 7
+    assert [row["symbol"] for row in ranked["rows"]] == ["XLK", "XLE", "XLP"]
+    assert [row["return_pct"] for row in ranked["rows"]] == pytest.approx([10, 6.25, 4])
+    assert [row["window_count"] for row in ranked["rows"]] == [4, 4, 1]
+    assert (ranked["rows"][-1]["window_start"], ranked["rows"][-1]["window_end"]) == (sessions[2], sessions[4])
+    assert performance.sector_windows(2, 1, 1)["rows"] == ranked["rows"][:1]
+    assert len(performance.cache) == 1
+    daily(market, "XLE", {sessions[4]: 120})
+    assert performance.sector_windows(2, 1, 1)["rows"][0]["symbol"] == "XLE"
+
+
+def test_sector_window_bounds_and_leap_year_lookback(tmp_path):
+    _, _, performance = workspace(tmp_path, "2024-02-29T16:00:00+00:00")
+    trailing = performance.sector_windows(5000, 1, 1)
+    assert trailing["start"] == "2023-02-28" and trailing["end"] == "2024-02-28"
+    assert trailing["rows"] == [] and trailing["possible_windows"] == 0
+    retained = performance.sector_windows(5000, 15, 1)
+    assert retained["start"] == "2010-01-04" and retained["end"] == "2024-02-28"
+    with pytest.raises(ValueError):
+        performance.sector_windows(10, 16, 3)
+    with pytest.raises(ValueError):
+        performance.get("etfs", 2009)
