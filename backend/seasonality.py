@@ -116,15 +116,18 @@ class Seasonality:
         current_year = datetime.fromtimestamp(now, MARKET_TIMEZONE).year
         first_year = max(MARKET_HISTORY_START.year, current_year - years)
         start = f"{first_year}-01-01"
-        sessions = [stamp for stamp, _, closing in nyse_session_hours(first_year, current_year)
-                    if stamp >= start and closing.timestamp() <= now]
+        closes_at = {stamp: closing.timestamp() for stamp, _, closing in nyse_session_hours(first_year, current_year)
+                     if stamp >= start and closing.timestamp() <= now}
+        sessions = list(closes_at)
         last_session = sessions[-1] if sessions else None
         data = self.market.read(symbol, "1d", start=start, end=last_session, limit=6000) if sessions else {"bars": [], "coverage": None}
         coverage = data["coverage"]
         key = (symbol, years, days, current_year, last_session, coverage["updated"] if coverage else None)
         with self.lock:
             if key not in self.cache:
-                bars = {bar["time"]: bar for bar in data["bars"]}
+                stored_at = coverage["updated"] if coverage else now
+                bars = {bar["time"]: bar for bar in data["bars"]
+                        if bar["time"] in closes_at and closes_at[bar["time"]] <= stored_at}
                 self.cache[key] = {"symbol": symbol, "lookback_years": years, "trading_days": days,
                                    "first_year": first_year, "last_completed_year": current_year - 1,
                                    "latest_session": last_session, "coverage": coverage,

@@ -157,6 +157,8 @@ label { display:flex; flex-direction:column; gap:7px; color:var(--muted); font-s
 .research-controls { display:flex; align-items:end; gap:12px; flex-wrap:wrap; margin:16px 0; }
 .research-coverage { margin-top:16px; font-size:12px; }
 .research-coverage summary { cursor:pointer; color:var(--accent); font-weight:600; padding:5px 0; }
+.market-coverage-table { max-height:min(60vh,520px); }
+.market-coverage-table th { position:sticky; top:0; z-index:1; background:var(--panel); }
 .seasonal-panel + .seasonal-panel { margin-top:16px; }
 .seasonal-legend { display:flex; flex-wrap:wrap; gap:8px 14px; margin-top:14px; }
 .seasonal-legend label { display:flex; flex-direction:row; align-items:center; gap:5px; color:var(--text); }

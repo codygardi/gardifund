@@ -1,8 +1,9 @@
 import math
+from datetime import datetime, timezone
 
 import pytest
 
-from backend.seasonality import indicators, seasonal_windows, yearly_curves
+from backend.seasonality import Seasonality, indicators, seasonal_windows, yearly_curves
 
 
 def test_seasonal_windows_align_calendar_starts_and_require_complete_samples():
@@ -39,3 +40,23 @@ def test_technical_indicators_use_latest_consecutive_daily_bars():
     assert result["stochastic_d"] == pytest.approx(100 * 14 / 15)
     del bars[sessions[-2]]
     assert indicators(sessions, bars) == {"as_of": sessions[-1], "rsi": None, "stochastic_k": None, "stochastic_d": None}
+
+
+def test_seasonality_waits_for_daily_bar_stored_after_exchange_close():
+    class Market:
+        stored_at = datetime(2024, 11, 5, 19, tzinfo=timezone.utc).timestamp()
+
+        def read(self, symbol, interval, **kwargs):
+            return {"coverage": {"updated": self.stored_at}, "bars": [
+                {"time": "2024-11-04", "close": 100, "high": 101, "low": 99},
+                {"time": "2024-11-05", "close": 110, "high": 111, "low": 109},
+            ]}
+
+    market = Market()
+    after_close = datetime(2024, 11, 5, 22, tzinfo=timezone.utc).timestamp()
+    research = Seasonality(market, clock=lambda: after_close)
+    result = research.get("SPY", 3, 21)
+    assert result["latest_session"] == "2024-11-05"
+    assert result["indicators"]["as_of"] == result["years"][0]["end"] == "2024-11-04"
+    market.stored_at = after_close
+    assert research.get("SPY", 3, 21)["indicators"]["as_of"] == "2024-11-05"

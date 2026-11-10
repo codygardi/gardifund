@@ -189,7 +189,9 @@ export default function SeasonalityView({ active, viewer, light, benchmarks, sec
       </section>
       <section className="panel chart-panel seasonal-panel" aria-label="Technical indicators">
         <SectionTitle eyebrow="LATEST DAILY CLOSE" title="Technical indicators"/>
-        <p className="muted small">{results.indicators.as_of ?? 'No completed session with data'}</p>
+        <p className="muted small">{results.indicators.as_of ?? 'No completed session with data'}
+          {results.indicators.as_of && results.latest_session !== results.indicators.as_of &&
+            ` · Latest market session ${results.latest_session}`}</p>
         <dl className="seasonal-indicators">
           <div><dt>RSI (14) <Tip text="Wilder’s relative strength index uses the latest run of consecutive daily closes."/></dt>
             <dd>{decimal(results.indicators.rsi, 1)}</dd></div>
