@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, ColorType, CrosshairMode, Time } from 'lightweight-charts';
-import { ArrowDownUp, BarChart3, Check, ChevronDown, LineChart, Search } from 'lucide-react';
+import { BarChart3, LineChart } from 'lucide-react';
 import { api, money, pagesBuild, pct, useApp, useResource } from '../api';
 import { Empty, ErrorNote, Segmented, Tip } from '../ui';
 
@@ -11,28 +11,24 @@ const chartTime = (s: string): Time => (s.length === 10 ? s : Math.floor(new Dat
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 type ChartMode = 'market' | 'etfs';
-type RankingMode = ChartMode | 'sectors' | 'stocks';
 type PeriodView = 'history' | 'year' | 'month';
 type ChartSeries = { symbol: string; bars: any[]; color: string };
-type PerformanceRow = { symbol: string; name: string; sector: string | null; return_pct: number };
+type PerformanceRow = { symbol: string; name: string; return_pct: number };
 type Performance = { start: string | null; end: string | null; rows: PerformanceRow[];
   series: Omit<ChartSeries, 'color'>[]; complete: boolean; basis: string | null; message: string };
 type Sector = { symbol: string; name: string };
-type SectorMove = Sector & { weight: number | null; weight_complete: boolean; change_pct: number | null;
-  constituent_count: number; classified_count: number; top: { symbol: string; name: string; change_pct: number }[] };
 const NO_COMPARISONS: ChartSeries[] = [];
 
-function storedRankCount(key: string, legacyKey?: string) {
+function storedRankCount(key: string) {
   try {
-    const previous = legacyKey ? localStorage.getItem(legacyKey) : null;
-    const value = Number(localStorage.getItem(key) ?? previous ?? '5');
+    const value = Number(localStorage.getItem(key) ?? '5');
     return Number.isInteger(value) ? Math.max(1, Math.min(5, value)) : 5;
   } catch {
     return 5;
   }
 }
 
-function useRanking(mode: RankingMode, period: PeriodView) {
+function useRanking(mode: ChartMode, period: PeriodView) {
   const today = new Date();
   const currentYear = today.getFullYear();
   const [year, setYear] = useState(String(currentYear));
@@ -42,8 +38,7 @@ function useRanking(mode: RankingMode, period: PeriodView) {
   const selectedMonth = Math.min(month, monthLimit);
   const periodLabel = period === 'month' ? `${MONTHS[selectedMonth - 1]} ${year}` : year;
   const rankKey = `gardifund-rank-${mode}-${year}${period === 'month' ? '-' + selectedMonth : ''}`;
-  const legacyKey = mode === 'stocks' && period === 'year' ? `gardifund-top-${year}` : undefined;
-  const rankCount = mode === 'market' ? 1 : rankCounts[rankKey] ?? storedRankCount(rankKey, legacyKey);
+  const rankCount = mode === 'market' ? 1 : rankCounts[rankKey] ?? storedRankCount(rankKey);
   const params = new URLSearchParams({mode, year, top_n: String(rankCount)});
   if (period === 'month') params.set('month', String(selectedMonth));
   const { data, error } = useResource(period === 'history' ? null : `/chart-performance?${params}`);
@@ -56,7 +51,7 @@ function useRanking(mode: RankingMode, period: PeriodView) {
 }
 
 function RankingControls({ period, mode, ranking }: {
-  period: PeriodView; mode: RankingMode; ranking: ReturnType<typeof useRanking>;
+  period: PeriodView; mode: ChartMode; ranking: ReturnType<typeof useRanking>;
 }) {
   return <>
     <label>Year
@@ -75,9 +70,7 @@ function RankingControls({ period, mode, ranking }: {
         {[1, 2, 3, 4, 5].map(value => <option key={value} value={value}>{value}</option>)}
       </select>
     </label>}
-    <Tip text={mode === 'sectors' ? 'Each sector uses its start-date SPY constituents weighted within the sector. Returns require adjusted stock closes at both endpoints.'
-      : mode === 'stocks' ? 'Stock rankings require dated SPY holdings and provider-declared adjusted closes.'
-      : 'Period returns compare the first session close with the last completed session close.'}/>
+    <Tip text="Period returns compare the first session close with the last completed session close."/>
   </>;
 }
 
@@ -154,8 +147,8 @@ function RankedPlot({ performance, error, showDetails, light, palette }: {
       description={showDetails ? performance?.message || error || 'Reading stored daily closes for the selected period.' : undefined}/></div>;
 }
 
-function RankingTable({ mode, performance, palette, viewer }: {
-  mode: RankingMode; performance: Performance | null; palette: string[]; viewer: boolean;
+function RankingTable({ performance, palette, viewer }: {
+  performance: Performance | null; palette: string[]; viewer: boolean;
 }) {
   if (!performance?.rows.length) return null;
   return <div className="period-results">
@@ -164,13 +157,11 @@ function RankingTable({ mode, performance, palette, viewer }: {
       {viewer ? (performance.basis === 'unverified' ? ' · Adjustments unverified' : ' · Provider-declared adjusted') : `. ${performance.message}`}
     </p>
     <div className="table-wrap"><table>
-      <thead><tr><th>RANK</th><th>{mode === 'sectors' ? 'SECTOR' : 'SYMBOL'}</th>
-        {mode === 'stocks' && <th>SECTOR</th>}<th>PERIOD RETURN</th></tr></thead>
+      <thead><tr><th>RANK</th><th>SYMBOL</th><th>PERIOD RETURN</th></tr></thead>
       <tbody>{performance.rows.map((row, index) => <tr key={row.symbol}>
         <td>{index + 1}</td>
-        <td><span className="legend-dot" style={{display:'inline-block',background:palette[index % palette.length]}}/> <strong>{mode === 'sectors' ? row.name : row.symbol}</strong>
-          {mode !== 'sectors' && <small className="cell-sub">{row.name}</small>}</td>
-        {mode === 'stocks' && <td>{row.sector || 'Unclassified'}</td>}
+        <td><span className="legend-dot" style={{display:'inline-block',background:palette[index % palette.length]}}/> <strong>{row.symbol}</strong>
+          <small className="cell-sub">{row.name}</small></td>
         <td className={row.return_pct >= 0 ? 'positive' : 'negative'}>{pct(row.return_pct)}</td>
       </tr>)}</tbody>
     </table></div>
@@ -300,23 +291,54 @@ function MarketChart({ viewer, light, palette, sectors }: ChartAppearance & { se
               {pct(change)} <small>vs. prior bar</small>
             </span>}
           </div>
+          <div className="chart-mode-controls">
+            <label>Period
+              <select value={period} onChange={e => setPeriod(e.target.value as PeriodView)}>
+                <option value="history">Full history</option>
+                <option value="year">Year</option>
+                <option value="month">Month</option>
+              </select>
+            </label>
+            {ranked && <RankingControls period={period} mode={mode} ranking={ranking}/>}
+            {!ranked && mode === 'etfs' && <label>SPY-related fund
+              <select value={fund} onChange={e => setFund(e.target.value)}>
+                <option value="SPY">SPY · S&P 500</option>
+                {sectors.map(sector => <option key={sector.symbol} value={sector.symbol}>{sector.symbol} · {sector.name}</option>)}
+              </select>
+            </label>}
+          </div>
         </div>
-      </div>
-      <div className="chart-mode-controls">
-        <label>Period
-          <select value={period} onChange={e => setPeriod(e.target.value as PeriodView)}>
-            <option value="history">Full history</option>
-            <option value="year">Year</option>
-            <option value="month">Month</option>
-          </select>
-        </label>
-        {ranked && <RankingControls period={period} mode={mode} ranking={ranking}/>}
-        {!ranked && mode === 'etfs' && <label>SPY-related fund
-          <select value={fund} onChange={e => setFund(e.target.value)}>
-            <option value="SPY">SPY · S&P 500</option>
-            {sectors.map(sector => <option key={sector.symbol} value={sector.symbol}>{sector.symbol} · {sector.name}</option>)}
-          </select>
-        </label>}
+        <div className="chart-tools">
+          <div className="chart-switcher" role="group" aria-label="Market chart view">
+            <Segmented values={[{value:'market',label:'Market'},{value:'etfs',label:'ETFs'}]} value={mode} onChange={value => setMode(value as ChartMode)}/>
+          </div>
+          {!ranked && bars.length > 0 && (!viewer || hasOlder) && <div className="history-controls">
+            {!viewer && <span className="muted tiny">{bars.length.toLocaleString()} of {data?.coverage?.row_count?.toLocaleString() || '—'} stored {chartSymbol} bars loaded</span>}
+            {hasOlder && <button type="button" className="button secondary" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? 'Loading earlier bars…' : 'Load earlier bars'}</button>}
+          </div>}
+          {!ranked && (!viewer || data?.coverage) && <div className="coverage-note">
+            <span>{data?.coverage ? `${viewer ? '' : data.coverage.source + ' · '}${data.coverage.coverage_start} to ${data.coverage.coverage_end}` : 'No coverage available'}</span>
+            <span>{data?.coverage?.adjustment === 'split_dividend_adjusted' ? 'Provider-declared adjusted' : 'Adjustments unverified'}
+              <Tip text={viewer ? 'The displayed date range may contain gaps.' : 'The stored date range can contain gaps. Tradier daily prices may lack dividend adjustments, and Yahoo limits hourly history.'}/>
+            </span>
+          </div>}
+          {ranked && <RankingTable performance={performance} palette={palette} viewer={viewer}/>}
+          {!ranked && mode === 'etfs' && availableFunds.length > 0 && <div className="sector-picker">
+            <div className="sector-picker-top">
+              <div><strong>Compare sector ETFs</strong>{!viewer && <small>Normalized price change · ETF data must match the selected interval</small>}</div>
+              <button type="button" className="text-link" onClick={() => setSelected(comparisonSymbols.length === availableFunds.length ? [] : availableFunds.map(s => s.symbol))}>
+                {comparisonSymbols.length === availableFunds.length ? 'Clear all' : 'Select all'}
+              </button>
+            </div>
+            <div className="sector-checks">{availableFunds.map(s => <label key={s.symbol}>
+              <input type="checkbox" checked={selected.includes(s.symbol)} onChange={() => toggle(s.symbol)}/>
+              <span className="legend-dot" style={{background: palette[sectors.indexOf(s)]}}/>
+              <span>{s.name} <small>{s.symbol}</small></span>
+            </label>)}</div>
+            {missingComparisons.length > 0 && <div className="muted tiny">{interval === '1h' ? 'Hourly' : 'Daily'} data unavailable for {missingComparisons.join(', ')}.</div>}
+            {comparisonMessage && <div className="muted tiny" role="status">{comparisonMessage}</div>}
+          </div>}
+        </div>
       </div>
       <div className="chart-toolbar">
         {ranked ? <>
@@ -341,122 +363,7 @@ function MarketChart({ viewer, light, palette, sectors }: ChartAppearance & { se
           chartType={chartType} volume={volume} interval={interval} light={light}/>
         : <div className="chart-empty"><Empty title="Waiting for market data"
           description={viewer ? undefined : 'Refresh stored market data from the local workspace. Missing history remains blank.'}/></div>}
-      <div className="chart-switcher" role="group" aria-label="Market chart view">
-        <Segmented values={[{value:'market',label:'Market'},{value:'etfs',label:'ETFs'}]} value={mode} onChange={value => setMode(value as ChartMode)}/>
-      </div>
-      {!ranked && bars.length > 0 && (!viewer || hasOlder) && <div className="history-controls">
-        {!viewer && <span className="muted tiny">{bars.length.toLocaleString()} of {data?.coverage?.row_count?.toLocaleString() || '—'} stored {chartSymbol} bars loaded</span>}
-        {hasOlder && <button className="button secondary" onClick={loadOlder} disabled={loadingOlder}>{loadingOlder ? 'Loading earlier bars…' : 'Load earlier bars'}</button>}
-      </div>}
-      {!ranked && (!viewer || data?.coverage) && <div className="coverage-note">
-        <span>{data?.coverage ? `${viewer ? '' : data.coverage.source + ' · '}${data.coverage.coverage_start} to ${data.coverage.coverage_end}` : 'No coverage available'}</span>
-        <span>{data?.coverage?.adjustment === 'split_dividend_adjusted' ? 'Provider-declared adjusted' : 'Adjustments unverified'}
-          <Tip text={viewer ? 'The displayed date range may contain gaps.' : 'The stored date range can contain gaps. Tradier daily prices may lack dividend adjustments, and Yahoo limits hourly history.'}/>
-        </span>
-      </div>}
-      {ranked && <RankingTable mode={mode} performance={performance} palette={palette} viewer={viewer}/>}
-      {!ranked && mode === 'etfs' && <div className="sector-picker">
-        <div className="sector-picker-top"><div><strong>Compare sector ETFs</strong>{!viewer && <small>Normalized price change · ETF data must match the selected interval</small>}</div><button className="text-link" onClick={() => setSelected(comparisonSymbols.length === availableFunds.length ? [] : availableFunds.map(s => s.symbol))}>{comparisonSymbols.length === availableFunds.length ? 'Clear all' : 'Select all'}</button></div>
-        <div className="sector-checks">{availableFunds.map(s => <label key={s.symbol}><input type="checkbox" checked={selected.includes(s.symbol)} onChange={() => toggle(s.symbol)}/><span className="legend-dot" style={{background: palette[sectors.indexOf(s)]}}/><span>{s.name}</span><small>{s.symbol}</small></label>)}</div>
-        {missingComparisons.length > 0 && <div className="muted tiny">{interval === '1h' ? 'Hourly' : 'Daily'} data unavailable for {missingComparisons.join(', ')}.</div>}
-        {comparisonMessage && <div className="muted tiny" role="status">{comparisonMessage}</div>}
-      </div>}
     </section>
-  </>;
-}
-
-function SectorHistory({ viewer, light, palette }: ChartAppearance) {
-  const [open, setOpen] = useState(false);
-  const [mode, setMode] = useState<'sectors' | 'stocks'>('sectors');
-  const [period, setPeriod] = useState<'year' | 'month'>('year');
-  const ranking = useRanking(mode, open ? period : 'history');
-  return <details className="sector-history" onToggle={e => setOpen(e.currentTarget.open)}>
-    <summary>Historical performance</summary>
-    {open && <>
-      <div className="chart-mode-controls">
-        <label>Rank by
-          <select value={mode} onChange={e => setMode(e.target.value as 'sectors' | 'stocks')}>
-            <option value="sectors">Sectors</option>
-            <option value="stocks">Constituent stocks</option>
-          </select>
-        </label>
-        <label>Period
-          <select value={period} onChange={e => setPeriod(e.target.value as 'year' | 'month')}>
-            <option value="year">Year</option>
-            <option value="month">Month</option>
-          </select>
-        </label>
-        <RankingControls period={period} mode={mode} ranking={ranking}/>
-      </div>
-      <RankedPlot performance={ranking.performance} error={ranking.error} showDetails={!viewer || mode === 'sectors'} light={light} palette={palette}/>
-      <RankingTable mode={mode} performance={ranking.performance} palette={palette} viewer={viewer}/>
-    </>}
-  </details>;
-}
-
-function SectorAnalysis({ viewer, light, palette, sectors }: ChartAppearance & { sectors: Sector[] }) {
-  const { state, refresh } = useApp();
-  const [selectedSectors, setSelectedSectors] = useState<string[] | null>(null);
-  const [search, setSearch] = useState('');
-  const [expanded, setExpanded] = useState('');
-  const [topN, setTopN] = useState('10');
-  const [start, setStart] = useState('');
-  const [end, setEnd] = useState('');
-  const [attribution, setAttribution] = useState<any>(null);
-  const [message, setMessage] = useState('');
-  const visibleSectors = selectedSectors ?? sectors.map(sector => sector.symbol);
-  const { data: trends, error: trendsError } = useResource(`/sectors?q=${encodeURIComponent(search)}&top_n=${Math.max(1, Math.min(10, Number(topN) || 10))}`);
-  useEffect(() => { if (state?.settings?.top_n) setTopN(String(state.settings.top_n)); }, [state?.settings?.top_n]);
-
-  function toggleSector(symbol: string) {
-    setSelectedSectors(visibleSectors.includes(symbol) ? visibleSectors.filter(value => value !== symbol) : [...visibleSectors, symbol]);
-  }
-  async function saveTop() { const n = Math.max(1, Math.min(10, Number(topN) || 10)); setTopN(String(n)); if (state?.access_scope !== 'local' || n === state?.settings?.top_n) return; try { await api('/settings', { method: 'PATCH', body: JSON.stringify({ top_n: n }) }); refresh(); } catch(e: any) { setMessage(e.message); } }
-  async function calculate(e: React.FormEvent) { e.preventDefault(); try { setAttribution(await api(`/attribution?${new URLSearchParams({start,end,sector: expanded,limit:topN})}`)); setMessage(''); } catch(e: any) { setMessage(e.message); } }
-  const trendRows: SectorMove[] = (trends?.rows || []).filter((row: SectorMove) => visibleSectors.includes(row.symbol));
-  const trendStatus = trendsError ? 'Sector quotes temporarily unavailable'
-    : !trends ? 'Loading sector quotes…' : trends.session ? `Quote session ${trends.session} · holdings-weighted day change`
-    : 'Waiting for comparable constituent quotes';
-  return <>
-    <section className="panel sector-panel" aria-labelledby="sector-trends-title">
-      <div className="section-title">
-        <div><h2 id="sector-trends-title">Sector trends</h2><p className="muted small">{trendStatus}</p></div>
-        <div className="sector-controls">
-          <div className="searchbox small-search"><Search size={15}/><input placeholder="Search sectors" aria-label="Search sectors" value={search} onChange={e => setSearch(e.target.value)}/></div>
-          <label className="top-label">Top <input type="number" min="1" max="10" aria-label="Top N stocks" value={topN} onChange={e => setTopN(e.target.value)} onBlur={saveTop}/> stocks</label>
-        </div>
-      </div>
-      {sectors.length > 0 && <div className="sector-picker">
-        <div className="sector-picker-top"><strong>Compare sectors</strong><button type="button" className="text-link"
-          onClick={() => setSelectedSectors(visibleSectors.length === sectors.length ? [] : null)}>{visibleSectors.length === sectors.length ? 'Clear all' : 'Select all'}</button></div>
-        <div className="sector-checks">{sectors.map(s => <label key={s.symbol}><input type="checkbox" checked={visibleSectors.includes(s.symbol)} onChange={() => toggleSector(s.symbol)}/><span>{s.name}</span></label>)}</div>
-      </div>}
-      <div className="sector-list">
-        {trendRows.map((row, i) => <div key={row.symbol}>
-          <button type="button" className="sector-row" onClick={() => { setExpanded(expanded === row.name ? '' : row.name); setAttribution(null); }} aria-expanded={expanded === row.name}>
-            <span className="sector-index">{String(i+1).padStart(2,'0')}</span>
-            <span className="sector-name"><strong>{row.name}</strong></span>
-            <span className="sector-classified">{row.classified_count} of {row.constituent_count} quoted</span>
-            <span>{row.weight == null ? '—' : `${(row.weight * 100).toFixed(2)}% of SPY`}
-              {!row.weight_complete && row.weight != null && <small className="cell-sub">Partial weight</small>}</span>
-            <span className={row.change_pct == null ? 'muted' : row.change_pct >= 0 ? 'positive' : 'negative'}
-              title={row.change_pct == null ? 'Comparable constituent quotes unavailable' : 'Holdings-weighted day change'}>{pct(row.change_pct)}</span>
-            <ChevronDown className={expanded === row.name ? 'rotate' : ''} size={16}/>
-          </button>
-          {expanded === row.name && <div className="sector-detail">
-            <div className="detail-title">TOP STOCKS BY DAY CHANGE <Tip text="Stock moves use cached quotes from the displayed session. Sector weights come from the dated SPY holdings snapshot."/></div>
-            {row.top.length ? <div className="top-stock-grid">{row.top.map(stock => <div key={stock.symbol}><strong>{stock.symbol}</strong><span>{stock.name}</span>
-              <b className={stock.change_pct >= 0 ? 'positive' : 'negative'}>{pct(stock.change_pct)}</b></div>)}</div>
-              : <p className="muted small">No comparable stock quotes available.</p>}
-          </div>}
-        </div>)}
-        {trends && !trendRows.length && <p className="muted small">No sectors match the current selection.</p>}
-      </div>
-      {!viewer && <p className="panel-caption">{trends?.note} {trends?.as_of && `Holdings dated ${trends.as_of}.`}</p>}
-      <SectorHistory viewer={viewer} light={light} palette={palette}/>
-    </section>
-    <ErrorNote text={viewer && message ? 'Data temporarily unavailable.' : message}/>
-    <section className="panel attribution-panel"><div className="section-title"><div><div className="eyebrow">HISTORICAL ATTRIBUTION</div><h2>Return contributors <Tip text="Requires an exact start-date holdings snapshot with weights and provider-declared split- and dividend-adjusted closes at both endpoints. Missing constituents are reported, not estimated."/></h2>{!viewer && <p className="muted small">Select a sector above, then choose exact start and end dates.</p>}</div></div><form className="attribution-form" onSubmit={calculate}><label>From<input type="date" required value={start} onChange={e => setStart(e.target.value)}/></label><label>To<input type="date" required value={end} onChange={e => setEnd(e.target.value)}/></label><div className="attribution-sector"><span>SECTOR</span><strong>{expanded || 'All sectors'}</strong></div><button className="button secondary" type="submit"><ArrowDownUp size={15}/> Calculate</button></form>{attribution && <><div className="notice">{attribution.message} {attribution.eligible != null && `${attribution.missing} of ${attribution.eligible} constituents missing.`}</div>{attribution.rows?.length > 0 && <div className="table-wrap"><table><thead><tr><th>STOCK</th><th>SECTOR</th><th>START WEIGHT</th><th>RETURN</th><th>CONTRIBUTION</th></tr></thead><tbody>{attribution.rows.map((r: any) => <tr key={r.symbol}><td><strong>{r.symbol}</strong></td><td>{r.sector}</td><td>{(r.weight*100).toFixed(2)}%</td><td>{pct(r.return*100)}</td><td>{pct(r.contribution*100)}</td></tr>)}</tbody></table></div>}</>}</section>
   </>;
 }
 
@@ -467,8 +374,7 @@ export default function Charts() {
   const light = theme === 'light';
   const palette = light ? LIGHT_COLORS : COLORS;
   return <>
-    <div className="page-heading"><div>{!viewer && <div className="page-kicker"><span className="kicker-line"/> MARKET INTELLIGENCE</div>}<h1>Charts<span className="heading-period">.</span></h1>{!viewer && <p className="page-subtitle">See the market from a wider perspective.</p>}</div>{!viewer && <div className="market-tag"><span className="status-dot"/> SPY · S&P 500 ETF</div>}</div>
+    <div className="page-heading"><div>{!viewer && <div className="page-kicker"><span className="kicker-line"/> MARKET INTELLIGENCE</div>}<h1>Snapshot<span className="heading-period">.</span></h1>{!viewer && <p className="page-subtitle">See the market from a wider perspective.</p>}</div>{!viewer && <div className="market-tag"><span className="status-dot"/> SPY · S&P 500 ETF</div>}</div>
     <MarketChart viewer={viewer} light={light} palette={palette} sectors={sectors}/>
-    <SectorAnalysis viewer={viewer} light={light} palette={palette} sectors={sectors}/>
   </>;
 }

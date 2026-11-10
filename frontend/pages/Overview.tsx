@@ -92,7 +92,7 @@ export default function Overview() {
 
   return <>
     <div className="page-heading">
-      <div><h1>Portfolio overview<span className="heading-period">.</span></h1>
+      <div><h1>Account<span className="heading-period">.</span></h1>
         <p className="page-subtitle">Live and simulated portfolio performance.</p></div>
       {local && <div className="heading-actions">
         {live ? <button className="button secondary" onClick={sync}><RefreshCw size={15}/> Sync account</button> : ShadowReset && <ShadowReset/>}
@@ -101,7 +101,7 @@ export default function Overview() {
     {local && <ErrorNote text={error}/>}
     {local && message && <div className="notice" role="status">{message}<button aria-label="Dismiss" onClick={() => setMessage('')}>×</button></div>}
     {!summary ? <section className="panel" role="status">
-      <Empty title={unavailable ? 'Overview unavailable' : 'Loading overview'}
+      <Empty title={unavailable ? 'Account unavailable' : 'Loading account'}
         action={unavailable ? <button className="button secondary" onClick={refresh}><RefreshCw size={15}/> Try again</button> : undefined}/>
     </section> : <div className="overview-grid">
       <section className="panel portfolio-panel">

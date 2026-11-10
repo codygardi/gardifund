@@ -11,9 +11,9 @@ const Data = import.meta.env.MODE === 'pages' ? null : lazy(() => import('./page
 const SettingsPage = import.meta.env.MODE === 'pages' ? null : lazy(() => import('./pages/Settings'));
 
 const nav = [
-  { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  { id: 'overview', label: 'Account', icon: LayoutDashboard },
+  { id: 'charts', label: 'Snapshot', icon: ChartNoAxesCombined },
   { id: 'investing', label: 'Investing', icon: BriefcaseBusiness },
-  { id: 'charts', label: 'Charts', icon: ChartNoAxesCombined },
   { id: 'news', label: 'News Engine', shortLabel: 'News', icon: Newspaper },
   { id: 'backtest', label: 'Back Test Engine', shortLabel: 'Back Test', icon: FlaskConical },
   { id: 'database', label: 'Database', icon: Database },
@@ -107,7 +107,7 @@ function Shell() {
         {local && SettingsPage && page === 'settings' && <SettingsPage/>}
         {isPlaceholder && (viewer
           ? <div className="placeholder-page"><h1>{label}</h1><p className="page-subtitle">Backtests will appear here.</p></div>
-          : <div className="placeholder-page"><div className="page-kicker"><Sparkles size={14}/> COMING INTO FOCUS</div><h1>{label}</h1><p className="page-subtitle">A dedicated space for {page === 'news' ? 'market news and research' : 'testing investment ideas against history'}.</p><div className="placeholder-card"><div className="placeholder-icon">{page === 'news' ? <Newspaper size={27}/> : <FlaskConical size={27}/>}</div><h2>Built for what comes next.</h2><p>This module is a placeholder. No {page === 'news' ? 'news feeds are connected' : 'backtests have been run'} yet.</p><button className="button secondary" onClick={() => navigate('overview')}>Back to overview <ArrowUpRight size={15}/></button></div></div>)}
+          : <div className="placeholder-page"><div className="page-kicker"><Sparkles size={14}/> COMING INTO FOCUS</div><h1>{label}</h1><p className="page-subtitle">A dedicated space for {page === 'news' ? 'market news and research' : 'testing investment ideas against history'}.</p><div className="placeholder-card"><div className="placeholder-icon">{page === 'news' ? <Newspaper size={27}/> : <FlaskConical size={27}/>}</div><h2>Built for what comes next.</h2><p>This module is a placeholder. No {page === 'news' ? 'news feeds are connected' : 'backtests have been run'} yet.</p><button className="button secondary" onClick={() => navigate('overview')}>Back to account <ArrowUpRight size={15}/></button></div></div>)}
       </Suspense>
     </main>
   </div>;
