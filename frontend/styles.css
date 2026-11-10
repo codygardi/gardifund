@@ -113,6 +113,8 @@ label { display:flex; flex-direction:column; gap:7px; color:var(--muted); font-s
 .discovery-progress { color:var(--accent); background:var(--input); border:1px solid var(--border); border-radius:6px; padding:10px 12px; margin-bottom:12px; font-size:10px; line-height:1.5; }
 .discovery-table .virtual-head,.discovery-table .virtual-row { grid-template-columns:minmax(190px,2fr) minmax(125px,1.2fr) minmax(125px,1fr) minmax(90px,.9fr) minmax(90px,.9fr) minmax(85px,.8fr); min-width:800px; }
 .discovery-table .virtual-scroll { min-width:800px; overflow-x:hidden; overflow-y:auto; }
+.sector-discovery .virtual-head,.sector-discovery .virtual-row { grid-template-columns:minmax(165px,2fr) repeat(4,minmax(85px,1fr)); min-width:570px; }
+.sector-discovery .virtual-scroll { min-width:570px; }
 .discovery-table .asset-cell small { max-width:210px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .discovery-table .cell-sub { font-size:9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .discovery-placeholder { padding:70px 20px; }
@@ -137,6 +139,7 @@ label { display:flex; flex-direction:column; gap:7px; color:var(--muted); font-s
 .chart-host { height:480px; }
 .chart-mode-controls { display:flex; flex-wrap:wrap; align-items:end; gap:14px; margin:20px 0 0; }
 .period-results { padding:8px 0 20px; }
+.sector-performance { margin-top:20px; }
 .modal label { margin-top:16px; }
 .modal .error { margin-top:14px; }
 .heading-actions { display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end; max-width:380px; }

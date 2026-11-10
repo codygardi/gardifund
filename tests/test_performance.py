@@ -69,7 +69,7 @@ def test_monthly_stocks_use_the_month_snapshot_and_last_completed_session(tmp_pa
         performance.get("stocks", 2024, month=3)
 
 
-def test_market_sector_and_etf_rankings_keep_their_universes_and_price_basis(tmp_path):
+def test_market_and_etf_rankings_keep_their_universes_and_price_basis(tmp_path):
     _, market, performance = workspace(tmp_path, "2024-02-06T16:00:00+00:00")
     for symbol, end in {"SPY": 105, "XLE": 130, "XLK": 120, "XLI": 115,
                         "XLV": 112, "XLY": 110, "XLP": 108}.items():
@@ -81,11 +81,44 @@ def test_market_sector_and_etf_rankings_keep_their_universes_and_price_basis(tmp
     assert [row["symbol"] for row in benchmark["rows"]] == ["SPY"]
     assert benchmark["rows"][0]["return_pct"] == pytest.approx(5)
     assert benchmark["complete"]
-    sectors = performance.get("sectors", 2024, month=2)
     etfs = performance.get("etfs", 2024, month=2, top_n=1)
-    assert [row["symbol"] for row in sectors["rows"]] == ["XLE", "XLK", "XLI", "XLV", "XLY"]
-    assert sectors["incompatible"] == 1 and sectors["missing"] == 4
-    assert sectors["basis"] == etfs["basis"] == "unverified"
-    assert etfs["eligible"] == sectors["eligible"] + 1
+    assert etfs["incompatible"] == 1 and etfs["missing"] == 4
+    assert etfs["basis"] == "unverified" and etfs["eligible"] == 12
     assert [row["symbol"] for row in etfs["rows"]] == ["XLE"]
     assert len(etfs["series"]) == 1
+
+
+def test_sector_ranking_uses_dated_weights_and_never_fills_missing_stock_prices(tmp_path):
+    db, market, performance = workspace(tmp_path, "2024-02-06T16:00:00+00:00")
+    daily(market, "XLE", {"2024-02-01": 100, "2024-02-05": 130})
+    assert performance.get("sectors", 2024, month=2)["rows"] == []
+    members = [{"symbol": "AAA", "weight": .2, "sector": "Energy"},
+               {"symbol": "BBB", "weight": .6, "sector": "Energy"},
+               {"symbol": "CCC", "weight": .2, "sector": "Information Technology"}]
+    store_holdings(db, "2024-02-01", members, "period start")
+    store_holdings(db, "2024-02-02", [{"symbol": "DDD", "weight": 1, "sector": "Energy"}], "later snapshot")
+    adjusted = "split_dividend_adjusted"
+    daily(market, "AAA", {"2024-02-01": 10, "2024-02-02": 11, "2024-02-05": 12}, adjusted)
+    daily(market, "BBB", {"2024-02-01": 10, "2024-02-05": 9})
+    daily(market, "CCC", {"2024-02-01": 10, "2024-02-02": 10, "2024-02-05": 10.5}, adjusted)
+    partial = performance.get("sectors", 2024, month=2)
+    assert [row["name"] for row in partial["rows"]] == ["Information Technology"]
+    assert partial["missing"] == 10 and not partial["complete"]
+
+    daily(market, "BBB", {"2024-02-01": 10, "2024-02-05": 9}, adjusted, replace=True)
+    result = performance.get("sectors", 2024, month=2)
+    assert [row["name"] for row in result["rows"]] == ["Information Technology", "Energy"]
+    energy = result["rows"][1]
+    assert energy["return_pct"] == pytest.approx(-2.5)
+    assert energy["weight"] == pytest.approx(.8) and energy["constituent_count"] == 2
+    assert result["basis"] == adjusted and result["missing"] == 9
+    assert result["series"][1]["bars"] == [{"time": "2024-02-01", "close": 100},
+                                          {"time": "2024-02-02", "close": None},
+                                          {"time": "2024-02-05", "close": pytest.approx(97.5)}]
+    assert performance.get("etfs", 2024, month=2)["rows"][0]["return_pct"] == pytest.approx(30)
+
+    members[0]["weight"], members[1]["weight"] = .6, .2
+    store_holdings(db, "2024-02-01", members, "revised weights")
+    result = performance.get("sectors", 2024, month=2, top_n=1)
+    assert result["rows"][0]["name"] == "Energy"
+    assert result["rows"][0]["return_pct"] == pytest.approx(12.5)

@@ -9,7 +9,8 @@ import httpx
 import openpyxl
 
 from .db import SECTORS
-from .market import SYMBOL, valid_symbol
+from .market import SYMBOL, calendar_dates, valid_symbol
+from .shadow import trading_day
 from .tradier import ProviderError
 
 SSGA_URL = "https://www.ssga.com/library-content/products/fund-data/etfs/us/holdings-daily-us-en-{}.xlsx"
@@ -69,6 +70,7 @@ def store_holdings(db, as_of, rows, source, note=""):
         conn.execute("INSERT INTO imports(dataset,source,created,status,message) VALUES(?,?,?,?,?)",
                      ("SPY constituents", source[:120], now, "complete", f"{len(cleaned)} rows dated {as_of}; weight {total:.2%}"))
         db.event("investing", "holdings_updated", conn)
+        db.event("charts", "holdings_updated", conn)
     return {"as_of": as_of, "count": len(cleaned), "weight": total,
             "classified": sum(1 for r in cleaned if r[3])}
 
@@ -151,9 +153,11 @@ def enrich_positions(db, positions):
 
 def discovery_rows(db, kind="all", sector=None, query="", limit=1000):
     with db.connect() as conn:
+        conn.execute("BEGIN")
         snapshot = conn.execute("SELECT * FROM holdings_snapshots ORDER BY as_of DESC LIMIT 1").fetchone()
         stock_rows = [dict(r) for r in conn.execute("""SELECT h.symbol,h.name,'stock' AS kind,h.sector,h.weight,
-             q.price,q.change,q.change_pct,q.volume,q.fetched FROM holdings h LEFT JOIN quotes q ON q.symbol=h.symbol
+             q.price,q.change,q.change_pct,q.volume,q.fetched,d.trade_at AS trade_time
+             FROM holdings h LEFT JOIN quotes q ON q.symbol=h.symbol LEFT JOIN quote_details d ON d.symbol=h.symbol
              WHERE h.as_of=?""", (snapshot["as_of"],))] if snapshot else []
         etf_symbols = ["SPY", *(symbol for symbol, _ in SECTORS)]
         placeholders = ",".join("?" for _ in etf_symbols)
@@ -170,6 +174,39 @@ def discovery_rows(db, kind="all", sector=None, query="", limit=1000):
         rows = [r for r in rows if term in r["symbol"].lower() or term in r["name"].lower()]
     rows.sort(key=lambda r: (r["weight"] is None, -(r["weight"] or 0), r["symbol"]))
     return {"snapshot": dict(snapshot) if snapshot else None, "rows": rows[:min(limit, 2000)]}
+
+
+def sector_day_moves(stocks, snapshot, top_n=0):
+    """Use one quote session and the dated SPY weights for each sector basket."""
+    groups = defaultdict(list)
+    dates = {}
+    now = time.time()
+    today = trading_day(now)
+    as_of = snapshot["as_of"] if snapshot else None
+    for stock in stocks:
+        groups[stock["sector"]].append(stock)
+        if as_of and stock["trade_time"] and stock["trade_time"] <= now and stock["price"] is not None:
+            day = trading_day(stock["trade_time"])
+            year = int(day[:4])
+            if as_of <= day <= today and day in calendar_dates(year, year):
+                dates[stock["symbol"]] = day
+    session = max(dates.values(), default=None)
+    weights_complete = snapshot is not None and not groups[None] and snapshot["weight_sum"] >= .995
+    rows = []
+    for symbol, name in SECTORS:
+        members = groups[name]
+        quoted = [row for row in members if session and dates.get(row["symbol"]) == session
+                  and row["change_pct"] is not None]
+        weight = sum(row["weight"] for row in members)
+        change = (sum(row["weight"] / weight * row["change_pct"] for row in quoted)
+                  if weight and len(quoted) == len(members) else None)
+        row = {"symbol": symbol, "name": name, "weight": weight or None, "weight_complete": weights_complete,
+               "constituent_count": len(members), "classified_count": len(quoted),
+               "change_pct": change if change is not None and math.isfinite(change) else None}
+        if top_n:
+            row["top"] = sorted(quoted, key=lambda stock: (-stock["change_pct"], stock["symbol"]))[:top_n]
+        rows.append(row)
+    return session, rows
 
 
 def attribution(db, market, start, end, sector=None, limit=10):

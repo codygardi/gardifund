@@ -6,6 +6,7 @@ import time
 from .db import SECTORS
 from .market import valid_symbol
 from .quotes import quote_fields, store_quotes
+from .services import sector_day_moves
 from .shadow import record_performance
 from .tradier import ProviderError
 
@@ -89,7 +90,6 @@ class MarketDiscovery:
                 last_bucket = bucket
         now = time.time()
         unclassified = sum(1 for h in holdings if not h["sector"])
-        weights_complete = unclassified == 0 and snapshot["weight_sum"] >= .995
         stocks = [{"symbol": h["symbol"], "name": h["name"], "kind": "stock", "sector": h["sector"],
                    "weight": h["weight"], **quote_fields(quotes.get(h["symbol"], {}))} for h in holdings]
         etfs = []
@@ -99,12 +99,8 @@ class MarketDiscovery:
             etfs.append({"symbol": symbol, "name": str(quote.get("description") or ("SPDR S&P 500 ETF Trust" if symbol == "SPY" else f"{sector} sector ETF"))[:160],
                          "kind": "etf", "sector": sector, "group": "market" if symbol == "SPY" else "sector",
                          **quote_fields(quote)})
-        sectors = []
-        for etf in etfs[1:]:
-            members = [h for h in holdings if h["sector"] == etf["sector"]]
-            sectors.append({**etf, "name": etf["sector"], "constituent_count": len(members),
-                            "weight": sum(h["weight"] for h in members) if members else None,
-                            "weight_complete": weights_complete})
+        sector_session, moves = sector_day_moves(stocks, snapshot)
+        sectors = [{**etf, **move} for etf, move in zip(etfs[1:], moves, strict=True)]
         with self.db.connect() as conn:
             store_quotes(conn, list(quotes.values()), symbols, now)
             record_performance(conn, now)
@@ -112,7 +108,8 @@ class MarketDiscovery:
                   "completed": now, "session": session, "requested": len(primary),
                   "quoted": sum(quote_fields(quotes.get(symbol, {}))["price"] is not None for symbol in primary),
                   "account_marks_requested": len(set(extras)), "unsupported_account_symbols": unsupported,
-                  "snapshot": dict(snapshot), "unclassified": unclassified, "sector_weights_complete": weights_complete,
+                  "snapshot": dict(snapshot), "unclassified": unclassified, "sector_session": sector_session,
+                  "sector_weights_complete": moves[0]["weight_complete"],
                   "message": "Temporary SPY-related lists; no curated results are saved."}
         with self.lock:
             self.current = result

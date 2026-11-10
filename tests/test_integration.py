@@ -959,6 +959,9 @@ def test_remote_sse_only_forwards_safe_market_identifiers(setup):
         app.state.db.event('charts', 'market_updated', payload={'symbol':'QQQ', 'interval':'1h'})
         private = await asyncio.wait_for(anext(stream), timeout=4)
         assert 'QQQ' not in private and 'status' in private
+        app.state.db.event('charts', 'market_updated', payload={'symbol':'AAA', 'interval':'1d'})
+        constituent = await asyncio.wait_for(anext(stream), timeout=4)
+        assert 'AAA' not in constituent and '"module": "charts"' in constituent and '"payload": null' in constituent
         await stream.aclose()
     asyncio.run(exercise())
 
@@ -1039,6 +1042,37 @@ def test_spy_sector_weights_report_incomplete_holdings(setup):
     result = app.state.discovery.scan()
     energy = next(row for row in result['lists']['sectors'] if row['symbol'] == 'XLE')
     assert energy['weight'] == pytest.approx(.4) and not energy['weight_complete'] and result['unclassified'] == 1
+
+
+def test_sector_moves_use_same_session_spy_stock_quotes_instead_of_the_etf(setup):
+    app, client = setup
+    store_holdings(app.state.db, '2024-01-02', [
+        {'symbol':'AAA','weight':.2,'sector':'Energy'}, {'symbol':'BBB','weight':.6,'sector':'Energy'},
+        {'symbol':'CCC','weight':.1,'sector':'Utilities'}, {'symbol':'DDD','weight':.1,'sector':'Utilities'},
+    ], 'dated test')
+    session = datetime.fromisoformat('2024-01-03T16:00:00+00:00').timestamp()
+
+    class Quotes:
+        def quotes(self, symbols):
+            moves = {'AAA':10, 'BBB':-6, 'CCC':5, 'DDD':9, 'XLE':30, 'XLU':20}
+            return [{'symbol':symbol, 'last':50.0, 'change_percentage':moves[symbol],
+                     'trade_date':session - 86400 if symbol == 'DDD' else session}
+                    for symbol in symbols if symbol in moves]
+
+    app.state.discovery.adapter = Quotes()
+    scan = app.state.discovery.scan()
+    assert scan['sector_session'] == '2024-01-03'
+    etf = next(row for row in scan['lists']['etfs'] if row['symbol'] == 'XLE')
+    energy = next(row for row in scan['lists']['sectors'] if row['symbol'] == 'XLE')
+    assert etf['change_pct'] == 30 and energy['change_pct'] == pytest.approx(-2)
+    assert energy['price'] == etf['price'] == 50 and energy['classified_count'] == 2
+    trends = client.get('/api/sectors?top_n=1').json()
+    assert trends['session'] == scan['sector_session'] and trends['as_of'] == '2024-01-02'
+    energy = next(row for row in trends['rows'] if row['name'] == 'Energy')
+    utilities = next(row for row in trends['rows'] if row['name'] == 'Utilities')
+    assert energy['change_pct'] == pytest.approx(-2) and energy['top'][0]['symbol'] == 'AAA'
+    assert utilities['change_pct'] is None and utilities['classified_count'] == 1
+    assert 'quote' not in energy and 'quote' not in utilities
 
 
 def test_discovery_progress_is_visible_and_cleared(setup):

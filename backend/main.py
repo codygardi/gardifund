@@ -24,7 +24,7 @@ from .discovery import MarketDiscovery
 from .market import BAR_INTERVALS, LOCK, BarInterval, MarketStore, valid_symbol
 from .security import AccessGuard
 from .setup_lock import LiveSetupLock
-from .services import SECTOR_NAMES, attribution, discovery_rows, enrich_positions, store_holdings
+from .services import SECTOR_NAMES, attribution, discovery_rows, enrich_positions, sector_day_moves, store_holdings
 from .tradier import Tradier, ProviderError
 from .worker import Worker
 from .execution import regular_session
@@ -191,8 +191,11 @@ def create_app(settings: Settings | None = None, adapter=None):
                                 and payload.get("interval") in BAR_INTERVALS):
                             event["payload"] = {"symbol": payload["symbol"], "interval": payload["interval"]}
                         else:
+                            chart_refresh = (event['module'] == 'database' or event['action'] == 'discovery_completed'
+                                             or event['module'] == 'charts' and (event['action'] == 'holdings_updated'
+                                                 or event['action'] == 'market_updated' and payload.get('interval') == '1d'))
                             module = ('overview' if event['module'] == 'overview' or event['module'] == 'investing' and event['action'].startswith('shadow_') else
-                                      'charts' if event['module'] == 'database' or event['action'] == 'discovery_completed' else 'status')
+                                      'charts' if chart_refresh else 'status')
                             event = {"id": cursor, "module": module, "action": "updated", "created": event["created"], "payload": None}
                     yield f"id: {cursor}\ndata: {json.dumps(event)}\n\n"
                 if remaining() > 0 and time.monotonic() - heartbeat > 12:
@@ -302,16 +305,15 @@ def create_app(settings: Settings | None = None, adapter=None):
 
     @app.get("/api/sectors")
     def sectors(q: str = "", top_n: int = Query(10, ge=1, le=10)):
-        universe = discovery_rows(db)["rows"]
-        by_symbol = {r["symbol"]: r for r in universe}
-        output = []
-        for symbol, name in SECTORS:
-            if q and q.lower() not in (symbol + " " + name).lower():
-                continue
-            stocks = [r for r in universe if r["kind"] == "stock" and r["sector"] == name and r["change_pct"] is not None]
-            stocks.sort(key=lambda r: r["change_pct"], reverse=True)
-            output.append({"symbol": symbol, "name": name, "quote": by_symbol.get(symbol), "top": stocks[:top_n], "classified_count": len(stocks)})
-        return {"rows": output, "note": "Sector labels inferred from same-date sector ETF membership. Top stocks ranked by latest cached daily quote change."}
+        universe = discovery_rows(db, kind="stock", limit=2000)
+        snapshot = universe["snapshot"]
+        if snapshot and snapshot["row_count"] > len(universe["rows"]):
+            return {"rows": [], "session": None, "note": "The holdings snapshot exceeds the sector quote calculation limit."}
+        session, rows = sector_day_moves(universe["rows"], snapshot, top_n)
+        term = q.strip().lower()
+        return {"rows": [row for row in rows if term in f"{row['symbol']} {row['name']}".lower()],
+                "session": session, "as_of": snapshot["as_of"] if snapshot else None,
+                "note": "Day change weights the classified SPY stocks within each sector. All of a sector's classified stocks need a quote from the same session."}
 
     @app.get("/api/chart-performance")
     @app.get("/view/chart-performance", include_in_schema=False)

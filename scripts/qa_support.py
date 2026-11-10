@@ -28,7 +28,7 @@ class SyntheticBroker:
             result.append({'symbol':symbol,'description':f'QA synthetic {symbol}','type':'etf' if symbol in {'SPY',*(s for s,_ in SECTORS)} else 'stock',
                            'last':value,'bid':value-.05,'ask':value+.05,'trade_date':self.now*1000,
                            'bid_date':self.now*1000,'ask_date':self.now*1000,'volume':100000+index*100,
-                           'change':1,'change_percentage':1})
+                           'change':1,'change_percentage':1 if symbol.startswith('Q') else 3})
         return result
 
 
@@ -40,10 +40,11 @@ def fixture(data_dir, local_port, remote_port, start_worker=False, auto_access=F
     app = create_app(settings,adapter=broker)
     app.state.worker.execution.clock = lambda: broker.now
     members = [{'symbol':f'Q{i:04d}','name':f'QA Example {i:04d}','sector':SECTORS[i%11][1],'weight':1/505} for i in range(505)]
-    for day in ('2026-01-02','2026-11-06'):
-        store_holdings(app.state.db,day,members,'QA SYNTHETIC DATA')
+    historical_members = [{**member, 'weight':1/len(SECTORS)} for member in members[:len(SECTORS)]]
+    store_holdings(app.state.db,'2026-01-02',historical_members,'QA SYNTHETIC DATA')
+    store_holdings(app.state.db,'2026-11-06',members,'QA SYNTHETIC DATA')
     sessions = [day for day,_,_ in nyse_session_hours(2026,2026) if '2026-01-02' <= day <= '2026-11-06']
-    for index,symbol in enumerate(['SPY',*(s for s,_ in SECTORS),'Q0001','Q0002']):
+    for index,symbol in enumerate(['SPY',*(s for s,_ in SECTORS),*(member['symbol'] for member in historical_members)]):
         rows = [{'time':day,'open':100+i*.15+index,'high':102+i*.15+index,'low':99+i*.15+index,
                  'close':101+i*.15+index,'volume':100000} for i,day in enumerate(sessions)]
         app.state.market.write(symbol,'1d',rows,'QA SYNTHETIC DATA','split_dividend_adjusted' if symbol.startswith('Q') else 'unverified')

@@ -354,6 +354,12 @@ class MarketStore:
 
     def daily_endpoint_closes(self, symbols, start, end, adjustment="split_dividend_adjusted"):
         """Read exact daily endpoints in one Parquet query under the generation lock."""
+        return self.daily_closes(symbols, (start, end), adjustment)
+
+    def daily_closes(self, symbols, sessions, adjustment="split_dividend_adjusted"):
+        """Read only the requested daily closes, in one batch for the basket."""
+        if not symbols or not sessions:
+            return {}
         prices = {}
         with LOCK:
             with self.db.connect() as conn:
@@ -367,14 +373,18 @@ class MarketStore:
                 if path.is_file():
                     mapping[os.path.normcase(str(path))] = record["symbol"]
             if mapping:
+                dates = ",".join("?" for _ in sessions)
                 con = duckdb.connect(":memory:")
                 try:
-                    rows = con.execute("SELECT filename,time,close FROM read_parquet(?, filename=true) WHERE time IN (?,?)", [list(mapping), start, end]).fetchall()
+                    rows = con.execute(f"SELECT filename,time,close FROM read_parquet(?, filename=true) WHERE time IN ({dates})",
+                                       [list(mapping), *sessions]).fetchall()
                 finally:
                     con.close()
+                symbols_by_file = {}
                 for filename, stamp, close in rows:
-                    symbol = mapping[os.path.normcase(str(Path(filename).resolve()))]
-                    prices.setdefault(symbol, {})[stamp] = close
+                    if filename not in symbols_by_file:
+                        symbols_by_file[filename] = mapping[os.path.normcase(str(Path(filename).resolve()))]
+                    prices.setdefault(symbols_by_file[filename], {})[stamp] = close
         return prices
 
     def quality(self, symbol, interval, limit=200):
