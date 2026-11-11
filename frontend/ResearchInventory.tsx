@@ -46,8 +46,8 @@ export default function ResearchInventory({ onNotice }: { onNotice: (message: st
 
   return <>
     <ErrorNote text={error}/>
-    <section className="panel data-panel" aria-label="Seasonality coverage">
-      <SectionTitle eyebrow="PHASE 1" title="Seasonality coverage" action={
+    <section className="panel data-panel" aria-label="Fund price coverage">
+      <SectionTitle title="Fund price coverage" action={
         <button className="button secondary" disabled={busy || state?.jobs?.some((job: { name: string; status: string }) => job.name === 'market' && job.status === 'running')}
           onClick={() => void run('/jobs/market/run', () => 'Market history refresh queued.')}>Refresh fund prices</button>}/>
       <p className="muted small">Daily ETF histories for the S&amp;P 500, Dow, Nasdaq-100, and 11 S&amp;P sectors.</p>

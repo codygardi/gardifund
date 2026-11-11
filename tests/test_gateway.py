@@ -98,7 +98,7 @@ def test_public_gateway_is_read_only_and_forwards_live_sse(tmp_path):
                                 env=env, capture_output=True, text=True, timeout=25)
         assert result.returncode == 0, result.stdout + result.stderr
         report = json.loads(result.stdout)
-        assert report['public_gateway_roundtrip'] and report['overview_sse_update'] and report['charts_sse_update']
+        assert report['public_gateway_roundtrip'] and report['overview_sse_update'] and report['private_events_redacted']
         update_thread.join(timeout=2)
         assert not update_thread.is_alive() and not update_errors
     finally:

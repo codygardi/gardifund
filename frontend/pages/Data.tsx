@@ -75,7 +75,6 @@ export default function Data() {
     ['Corporate actions', `${data?.counts?.corporate_actions ?? 0} records`, 'Splits & dividends', RefreshCw],
     ['Accounts', `${data?.counts?.accounts ?? 0} live ${data?.counts?.accounts === 1 ? 'account' : 'accounts'}`, 'Plus shadow ledger', HardDrive],
     ['News', 'Not connected', 'Placeholder', Database],
-    ['Back tests', 'Not connected', 'Placeholder', Database],
   ];
   return <>
     <div className="page-heading"><div><div className="page-kicker"><span className="kicker-line"/> DATA FOUNDATION</div><h1>Database<span className="heading-period">.</span></h1><p className="page-subtitle">Know what you have, where it came from, and how current it is.</p></div><span className="market-tag"><span className="status-dot"/> LOCAL STORAGE</span></div>

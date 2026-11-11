@@ -1,9 +1,6 @@
 // Public read-only projections from a fixed Tunnel VPC Service.
 const PAGES = 'https://codygardi.github.io';
-const VIEWS = new Set([
-  '/view/state', '/view/overview', '/view/events', '/view/bars',
-  '/view/sectors', '/view/attribution', '/view/chart-performance',
-]);
+const VIEWS = new Set(['/view/state', '/view/overview', '/view/events']);
 const HEADERS = {
   'Access-Control-Allow-Origin': PAGES,
   'Cache-Control': 'no-store',

@@ -36,7 +36,7 @@ export async function api(path: string, init: RequestInit = {}) {
   return readWorkspaceResponse(response);
 }
 
-type Context = { state: any; stateUnavailable: boolean; revision: number; resourceVersions:Record<string,number>; marketVersions: Record<string, number>; connected: boolean; refresh: () => void; mode: 'live' | 'shadow'; setMode: (v: 'live' | 'shadow') => void; theme:string; setTheme:(v:'dark'|'light') => void };
+type Context = { state: any; stateUnavailable: boolean; revision: number; resourceVersions:Record<string,number>; connected: boolean; refresh: () => void; mode: 'live' | 'shadow'; setMode: (v: 'live' | 'shadow') => void; theme:string; setTheme:(v:'dark'|'light') => void };
 const AppContext = createContext<Context>(null!);
 export const useApp = () => useContext(AppContext);
 
@@ -46,7 +46,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [revision, setRevision] = useState(0);
   const [stateRevision, setStateRevision] = useState(0);
   const [resourceVersions, setResourceVersions] = useState<Record<string,number>>({});
-  const [marketVersions, setMarketVersions] = useState<Record<string, number>>({});
   const [connected, setConnected] = useState(false);
   const [mode, setMode] = useState<'live' | 'shadow'>('live');
   const [themeOverride, setThemeOverride] = useState(() => { try { const value = localStorage.getItem('gardifund-theme'); return value === 'light' || value === 'dark' ? value : ''; } catch { return ''; } });
@@ -96,10 +95,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             const event = JSON.parse(message.data);
             if (event.module === 'refresh') refresh();
             else if (typeof event.module === 'string') setResourceVersions(current => ({...current,[event.module]:(current[event.module] || 0)+1}));
-            if (event.module === 'charts' && event.action === 'market_updated' && typeof event.payload?.symbol === 'string' && typeof event.payload?.interval === 'string') {
-              const key = `${event.payload.symbol}:${event.payload.interval}`;
-              setMarketVersions(current => ({ ...current, [key]: (current[key] || 0) + 1 }));
-            }
           } catch { /* A malformed event must not prevent the normal refresh. */ }
           if (timer) clearTimeout(timer);
           timer = setTimeout(() => setStateRevision(value => value + 1), 200);
@@ -122,23 +117,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     document.documentElement.dataset.theme = theme;
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'light' ? '#eef2eb' : '#111713');
   }, [theme]);
-  return <AppContext.Provider value={{ state, stateUnavailable, revision, resourceVersions, marketVersions, connected, refresh, mode, setMode, theme, setTheme }}>{children}</AppContext.Provider>;
+  return <AppContext.Provider value={{ state, stateUnavailable, revision, resourceVersions, connected, refresh, mode, setMode, theme, setTheme }}>{children}</AppContext.Provider>;
 }
 
 export function useResource(path: string | null) {
-  const { revision, resourceVersions, marketVersions } = useApp();
-  const [name, search] = path?.split('?') ?? [];
-  const query = new URLSearchParams(search);
-  let version = 0;
-  if (name === '/bars' || (name === '/chart-performance' && query.get('mode') === 'seasonality')) {
-    const interval = name === '/bars' ? query.get('interval') || '1d' : '1d';
-    version = marketVersions[`${query.get('symbol') || 'SPY'}:${interval}`] || 0;
-  } else {
-    const modules = name === '/overview' || name === '/overview/summary' || name === '/positions' ? ['overview','investing']
-      : name === '/chart-performance' ? ['charts','database'] : name === '/sectors' ? ['investing','overview','charts']
-      : name === '/setup-access' ? [] : ['database','settings','charts'];
-    version = modules.reduce((sum,key) => sum + (resourceVersions[key] || 0),0);
-  }
+  const { revision, resourceVersions } = useApp();
+  const [name] = path?.split('?') ?? [];
+  const modules = name === '/overview' || name === '/overview/summary' || name === '/positions' ? ['overview', 'investing']
+    : name === '/setup-access' ? [] : ['database', 'settings'];
+  const version = modules.reduce((sum, key) => sum + (resourceVersions[key] || 0), 0);
   const [result, setResult] = useState<{ path: string | null; data: any; error: string }>({ path, data: null, error: '' });
   useEffect(() => {
     if (!path) return;

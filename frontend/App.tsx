@@ -1,21 +1,19 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
-import { ArrowUpRight, BriefcaseBusiness, ChartNoAxesCombined, Database, FlaskConical, LayoutDashboard, Moon, Newspaper, Settings, Sparkles, Sun } from 'lucide-react';
+import { ArrowUpRight, BookOpen, BriefcaseBusiness, Database, LayoutDashboard, Moon, Newspaper, Settings, Sparkles, Sun } from 'lucide-react';
 import { AppProvider, pagesBuild, useApp } from './api';
 import type { InvestingView } from './pages/Investing';
 import { Loading, Segmented } from './ui';
 
 const Overview = lazy(() => import('./pages/Overview'));
 const Investing = import.meta.env.MODE === 'pages' ? null : lazy(() => import('./pages/Investing'));
-const Charts = lazy(() => import('./pages/Charts'));
 const Data = import.meta.env.MODE === 'pages' ? null : lazy(() => import('./pages/Data'));
 const SettingsPage = import.meta.env.MODE === 'pages' ? null : lazy(() => import('./pages/Settings'));
 
 const nav = [
   { id: 'overview', label: 'Account', icon: LayoutDashboard },
-  { id: 'charts', label: 'Snapshot', icon: ChartNoAxesCombined },
   { id: 'investing', label: 'Investing', icon: BriefcaseBusiness },
   { id: 'news', label: 'News Engine', shortLabel: 'News', icon: Newspaper },
-  { id: 'backtest', label: 'Back Test Engine', shortLabel: 'Back Test', icon: FlaskConical },
+  { id: 'research', label: 'Research', icon: BookOpen },
   { id: 'database', label: 'Database', icon: Database },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
@@ -33,8 +31,8 @@ function Brand() {
 function Offline() {
   return <main className="offline-page" id="main-content">
     <div className="brand"><Brand/></div>
-    <h1>Portfolio &amp; markets<span className="heading-period">.</span></h1>
-    <p className="page-subtitle">A read-only view of portfolio performance and SPY.</p>
+    <h1>Portfolio overview<span className="heading-period">.</span></h1>
+    <p className="page-subtitle">A read-only view of portfolio performance.</p>
     <div className="offline-status" role="status">
       <strong><span className="status-dot muted" aria-hidden="true"/> Dashboard offline</strong>
       <p>Contact the admin to start the GARDiFUND server.</p>
@@ -58,9 +56,8 @@ function Shell() {
     const timer = setTimeout(() => setViewerOffline(true), 8000);
     return () => clearTimeout(timer);
   }, [connected, viewer]);
-  const visibleNav = nav.filter(item => local || ['overview','charts','backtest'].includes(item.id));
+  const visibleNav = nav.filter(item => local || ['overview', 'research'].includes(item.id));
   const label = nav.find(n => n.id === page)?.label;
-  const isPlaceholder = page === 'news' || page === 'backtest';
   function navigate(next: string) {
     if (next === 'investing' && page !== next) setInvestingView('discovery');
     setPage(next);
@@ -102,12 +99,10 @@ function Shell() {
       <Suspense fallback={<Loading/>}>
         {page === 'overview' && <Overview/>}
         {local && Investing && page === 'investing' && <Investing view={investingView} onPositions={() => setInvestingView('positions')}/>}
-        {page === 'charts' && <Charts/>}
         {local && Data && page === 'database' && <Data/>}
         {local && SettingsPage && page === 'settings' && <SettingsPage/>}
-        {isPlaceholder && (viewer
-          ? <div className="placeholder-page"><h1>{label}</h1><p className="page-subtitle">Backtests will appear here.</p></div>
-          : <div className="placeholder-page"><div className="page-kicker"><Sparkles size={14}/> COMING INTO FOCUS</div><h1>{label}</h1><p className="page-subtitle">A dedicated space for {page === 'news' ? 'market news and research' : 'testing investment ideas against history'}.</p><div className="placeholder-card"><div className="placeholder-icon">{page === 'news' ? <Newspaper size={27}/> : <FlaskConical size={27}/>}</div><h2>Built for what comes next.</h2><p>This module is a placeholder. No {page === 'news' ? 'news feeds are connected' : 'backtests have been run'} yet.</p><button className="button secondary" onClick={() => navigate('overview')}>Back to account <ArrowUpRight size={15}/></button></div></div>)}
+        {page === 'research' && <div className="placeholder-page"><h1>{label}</h1></div>}
+        {page === 'news' && <div className="placeholder-page"><div className="page-kicker"><Sparkles size={14}/> COMING INTO FOCUS</div><h1>{label}</h1><p className="page-subtitle">A dedicated space for market news and research.</p><div className="placeholder-card"><div className="placeholder-icon"><Newspaper size={27}/></div><h2>Built for what comes next.</h2><p>This module is a placeholder. No news feeds are connected yet.</p><button className="button secondary" onClick={() => navigate('overview')}>Back to account <ArrowUpRight size={15}/></button></div></div>}
       </Suspense>
     </main>
   </div>;

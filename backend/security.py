@@ -10,8 +10,7 @@ from jwt import PyJWKClient
 
 from .config import Settings
 
-VIEW_PATHS = {"/view/state", "/view/overview", "/view/events", "/view/bars",
-              "/view/sectors", "/view/attribution", "/view/chart-performance"}
+VIEW_PATHS = {"/view/state", "/view/overview", "/view/events"}
 
 
 class AccessGuard:

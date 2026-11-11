@@ -208,10 +208,6 @@ def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkey
         assert client.get('/view/backups', headers=auth).status_code == 403
         assert client.get('/view/setup-access', headers=auth).status_code == 403
         assert client.get('/view/setups/live/drafts', headers=auth).status_code == 403
-        assert client.get('/view/bars?symbol=AAPL', headers=auth).status_code == 403
-        assert client.get('/view/bars?symbol=QQQ', headers=auth).status_code == 200
-        assert client.get('/view/chart-performance?mode=seasonality&symbol=QQQ', headers=auth).status_code == 200
-        assert client.get('/view/chart-performance?mode=seasonality&symbol=AAPL', headers=auth).status_code == 403
         assert client.get('/api/database/research', headers=auth).status_code == 403
         assert client.get('/view/market/quality?symbol=QQQ', headers=auth).status_code == 403
         assert client.get('/view/state', headers={'Host': 'localhost:8765'}).status_code == 401
@@ -237,16 +233,11 @@ def test_cloudflare_jwt_signature_claims_and_read_only_boundary(tmp_path, monkey
             }
         portfolio = client.get('/view/positions', headers=auth)
         assert portfolio.status_code == 403
-        for path in ('/view/discovery','/view/database','/view/market/quality?symbol=SPY','/view/settings','/view/setup-access','/view/positions'):
+        for path in ('/view/discovery', '/view/database', '/view/market/quality?symbol=SPY',
+                     '/view/settings', '/view/setup-access', '/view/positions',
+                     '/view/bars', '/view/sectors', '/view/attribution', '/view/chart-performance'):
             assert client.get(path, headers=auth).status_code == 403
-        ranking = client.get('/view/chart-performance?mode=market&year=2024&month=1&top_n=5', headers=auth)
-        assert ranking.json()['rows'][0]['return_pct'] == pytest.approx((104 / 101 - 1) * 100)
-        assert client.get('/view/chart-performance?mode=market&year=2024&top_n=6', headers=auth).status_code == 422
-        assert client.get('/view/chart-performance?mode=market&year=2024').status_code == 401
-        rolling = client.get('/view/chart-performance?mode=sector_windows&trading_days=5&lookback_years=1&top_n=2', headers=auth)
-        assert rolling.status_code == 200 and rolling.json()['trading_days'] == 5
-        assert client.get('/view/chart-performance?mode=sector_windows&top_n=4', headers=auth).status_code == 422
-        views = (live, simulated, ranking, client.get('/view/state', headers=auth), client.get('/view/bars', headers=auth))
+        views = (live, simulated, client.get('/view/state', headers=auth))
         for response in views:
             assert response.status_code == 200
             assert all(secret not in response.text for secret in ('ACCT1234', 'PRIVATE-POSITION-ID', 'PRIVATE-ORDER-ID',
@@ -521,18 +512,24 @@ def test_worker_runs_due_job_without_browser(tmp_path):
         worker.stop()
 
 
-def test_sector_intraday_jobs_are_bounded_persisted_and_queueable(setup):
+def test_removed_research_apis_are_unavailable_locally(setup):
+    _, client = setup
+    for path in ('/api/chart-performance', '/api/backtest/settings'):
+        assert client.get(path).status_code == 404
+    for path in ('/api/market/sector-history', '/api/backtest/run'):
+        assert mutate(client, 'POST', path, json={}).status_code in (404, 405)
+
+
+def test_sector_intraday_jobs_are_bounded_and_staggered(setup):
     app, client = setup
     state = client.get('/api/state').json()
     assert state['sector_history']['total'] == 11
     assert {j['name'] for j in state['jobs']} == {'account','benchmark_holdings','discovery','holdings','market','adjustments','portfolio'}
-    response = mutate(client, 'POST', '/api/market/sector-history', json={'interval':'1h','symbols':['XLC','XLF']})
-    assert response.status_code == 200 and set(response.json()['queued']) == {'XLC','XLF'}
-    assert mutate(client, 'POST', '/api/market/sector-history', json={'interval':'30m','symbols':['XLC']}).status_code == 422
-    assert mutate(client, 'POST', '/api/market/sector-history', json={'interval':'1h','symbols':['QQQ']}).status_code == 400
     with app.state.db.connect() as conn:
-        queued = conn.execute("SELECT next_run FROM jobs WHERE name='sector_intraday:XLC:1h'").fetchone()[0]
-    assert queued <= time.time() + 1
+        jobs = conn.execute("SELECT next_run,interval_seconds FROM jobs WHERE name LIKE 'sector_intraday:%:1h' ORDER BY next_run").fetchall()
+    assert len(jobs) == 11
+    assert all(job['interval_seconds'] == 86400 for job in jobs)
+    assert [second['next_run'] - first['next_run'] for first, second in zip(jobs, jobs[1:])] == [20] * 10
 
     class MarketRecorder:
         def __init__(self): self.calls = []
@@ -1012,14 +1009,14 @@ def test_sse_emits_committed_event(setup):
         response = await endpoint(RequestStub())
         stream = response.body_iterator
         assert 'connected' in await anext(stream)
-        app.state.db.event('charts','market_updated',payload={'symbol':'XLC','interval':'1h'})
+        app.state.db.event('database', 'market_updated', payload={'symbol':'XLC','interval':'1h'})
         event = await asyncio.wait_for(anext(stream), timeout=4)
-        assert 'market_updated' in event and '"symbol": "XLC"' in event and 'id:' in event
+        assert '"module": "database"' in event and 'market_updated' in event and '"symbol": "XLC"' in event and 'id:' in event
         await stream.aclose()
     asyncio.run(exercise())
 
 
-def test_remote_sse_only_forwards_safe_market_identifiers(setup):
+def test_remote_sse_sanitizes_current_and_legacy_market_events(setup):
     app, _ = setup
     endpoint = next(route.endpoint for route in app.routes if getattr(route, 'path', '') == '/view/events')
     class RequestStub:
@@ -1034,15 +1031,11 @@ def test_remote_sse_only_forwards_safe_market_identifiers(setup):
         app.state.db.event('overview', 'account_synced', payload={'account':'ACCT1234'})
         account = await asyncio.wait_for(anext(stream), timeout=4)
         assert 'ACCT1234' not in account and 'account_synced' not in account and 'overview' in account
-        app.state.db.event('charts', 'market_updated', payload={'symbol':'XLC', 'interval':'1h', 'private':'SECRET'})
-        market = await asyncio.wait_for(anext(stream), timeout=4)
-        assert 'market_updated' in market and 'XLC' in market and 'SECRET' not in market
-        app.state.db.event('charts', 'market_updated', payload={'symbol':'AAPL', 'interval':'1h'})
-        private = await asyncio.wait_for(anext(stream), timeout=4)
-        assert 'AAPL' not in private and 'status' in private
-        app.state.db.event('charts', 'market_updated', payload={'symbol':'AAA', 'interval':'1d'})
-        constituent = await asyncio.wait_for(anext(stream), timeout=4)
-        assert 'AAA' not in constituent and '"module": "charts"' in constituent and '"payload": null' in constituent
+        for module in ('database', 'charts'):
+            app.state.db.event(module, 'market_updated', payload={'symbol':'XLC', 'interval':'1h', 'private':'SECRET'})
+            market = await asyncio.wait_for(anext(stream), timeout=4)
+            assert all(value not in market for value in ('market_updated', 'XLC', 'SECRET'))
+            assert '"module": "status"' in market and '"payload": null' in market
         await stream.aclose()
     asyncio.run(exercise())
 

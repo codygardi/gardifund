@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from . import shadow
 from .config import ROOT, Settings
-from .db import BENCHMARKS, RESEARCH_FUNDS, Database, SECTORS
+from .db import RESEARCH_FUNDS, Database, SECTORS
 from .discovery import MarketDiscovery
 from .market import BAR_INTERVALS, LOCK, MARKET_HISTORY_SYMBOLS, BarInterval, MarketStore, history_bounds, history_contains, valid_symbol
 from .security import AccessGuard
@@ -28,9 +28,7 @@ from .services import SECTOR_NAMES, attribution, discovery_rows, enrich_position
 from .tradier import Tradier, ProviderError
 from .worker import Worker
 from .execution import regular_session
-from .performance import MAX_WINDOW_DAYS, PerformanceMode, PeriodPerformance
 from .research import queue_company_history, research_catalog, store_benchmark_holdings
-from .seasonality import MAX_YEARS, Seasonality
 
 
 class SettingsUpdate(BaseModel):
@@ -43,11 +41,6 @@ class SettingsUpdate(BaseModel):
 
 class SetupUnlock(BaseModel):
     password: str = Field(min_length=1, max_length=128)
-
-
-class SectorHistoryRequest(BaseModel):
-    interval: Literal["1h"]
-    symbols: list[str] = Field(min_length=1, max_length=len(SECTORS))
 
 
 class ShadowOrder(BaseModel):
@@ -83,9 +76,6 @@ def create_app(settings: Settings | None = None, adapter=None):
     adapter = adapter or Tradier(settings.production_api_key)
     discovery_store = MarketDiscovery(db, adapter)
     worker = Worker(db, adapter, market, discovery_store)
-    performance = PeriodPerformance(db, market)
-    seasonality = Seasonality(market)
-    benchmarks = [{"symbol": symbol, "name": name} for symbol, name in BENCHMARKS]
     setup_lock = LiveSetupLock(settings.setups_password_hash)
 
     @asynccontextmanager
@@ -143,7 +133,7 @@ def create_app(settings: Settings | None = None, adapter=None):
         scan_status = {key: value for key, value in scan.items() if key != "lists"}
         scan_status["progress"] = discovery_store.progress()
         return {"access_scope": request.state.access_scope, "settings": db.settings(), "jobs": jobs, 'session': session, "sectors": [{"symbol": s, "name": n} for s, n in SECTORS],
-                "benchmarks": benchmarks, "holdings": dict(latest) if latest else None, "event_id": last_id,
+                "holdings": dict(latest) if latest else None, "event_id": last_id,
                 "discovery": scan_status,
                 "sector_history": {"total": len(sector_jobs), "complete": sum(j["status"] == "complete" for j in sector_jobs),
                                    "running": sum(j["status"] == "running" for j in sector_jobs),
@@ -189,21 +179,14 @@ def create_app(settings: Settings | None = None, adapter=None):
                         return
                     cursor = row["id"]
                     event = dict(row)
-                    if event["payload"]:
-                        event["payload"] = json.loads(event["payload"])
                     if request.state.access_scope == "remote":
-                        payload = event.get("payload") or {}
-                        if (event["module"] == "charts" and event["action"] == "market_updated"
-                                and payload.get("symbol") in MARKET_HISTORY_SYMBOLS
-                                and payload.get("interval") in BAR_INTERVALS):
-                            event["payload"] = {"symbol": payload["symbol"], "interval": payload["interval"]}
-                        else:
-                            chart_refresh = (event['module'] == 'database' or event['action'] == 'discovery_completed'
-                                             or event['module'] == 'charts' and (event['action'] == 'holdings_updated'
-                                                 or event['action'] == 'market_updated' and payload.get('interval') == '1d'))
-                            module = ('overview' if event['module'] == 'overview' or event['module'] == 'investing' and event['action'].startswith('shadow_') else
-                                      'charts' if chart_refresh else 'status')
-                            event = {"id": cursor, "module": module, "action": "updated", "created": event["created"], "payload": None}
+                        account_update = event["module"] == "overview" or (
+                            event["module"] == "investing" and event["action"].startswith("shadow_")
+                        )
+                        event = {"id": cursor, "module": "overview" if account_update else "status",
+                                 "action": "updated", "created": event["created"], "payload": None}
+                    elif event["payload"]:
+                        event["payload"] = json.loads(event["payload"])
                     yield f"id: {cursor}\ndata: {json.dumps(event)}\n\n"
                 if remaining() > 0 and time.monotonic() - heartbeat > 12:
                     yield ": heartbeat\n\n"
@@ -281,35 +264,6 @@ def create_app(settings: Settings | None = None, adapter=None):
     def market_quality(symbol: str, interval: BarInterval = "1d", limit: int = Query(200, ge=1, le=500)):
         return market.quality(symbol, interval, limit)
 
-    @app.post("/api/market/sector-history")
-    def request_sector_history(body: SectorHistoryRequest):
-        allowed = {symbol for symbol, _ in SECTORS}
-        symbols = list(dict.fromkeys(valid_symbol(symbol) for symbol in body.symbols))
-        if any(symbol not in allowed for symbol in symbols):
-            raise ValueError("Only the 11 sector ETFs can be queued here")
-        now, queued, running, retrying = time.time(), [], [], []
-        with db.connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            for symbol in symbols:
-                name = f"sector_intraday:{symbol}:{body.interval}"
-                job = conn.execute("SELECT status,last_finished,next_run FROM jobs WHERE name=?", (name,)).fetchone()
-                if not job:
-                    conn.execute("INSERT INTO jobs(name,interval_seconds,next_run) VALUES(?,?,?)", (name, 86400, now))
-                    queued.append(symbol)
-                    continue
-                if job["status"] == "running":
-                    running.append(symbol)
-                elif job["status"] == "error" and job["last_finished"] and job["last_finished"] > now - 300:
-                    retrying.append(symbol)
-                elif job["status"] == "idle" and job["next_run"] <= now + 1:
-                    queued.append(symbol)
-                else:
-                    conn.execute("UPDATE jobs SET enabled=1,next_run=?,status='idle',message='Queued from Charts' WHERE name=?", (now, name))
-                    queued.append(symbol)
-            if queued:
-                db.event("settings", "sector_history_queued", conn)
-        return {"queued": queued, "running": running, "retrying": retrying}
-
     @app.get("/api/sectors")
     def sectors(q: str = "", top_n: int = Query(10, ge=1, le=10)):
         universe = discovery_rows(db, kind="stock", limit=2000)
@@ -321,26 +275,6 @@ def create_app(settings: Settings | None = None, adapter=None):
         return {"rows": [row for row in rows if term in f"{row['symbol']} {row['name']}".lower()],
                 "session": session, "as_of": snapshot["as_of"] if snapshot else None,
                 "note": "Day change weights the classified SPY stocks within each sector. All of a sector's classified stocks need a quote from the same session."}
-
-    @app.get("/api/chart-performance")
-    @app.get("/view/chart-performance", include_in_schema=False)
-    def chart_performance(request: Request, mode: PerformanceMode | Literal["sector_windows", "seasonality"],
-                          year: int | None = Query(None, ge=2000, le=2100),
-                          month: int | None = Query(None, ge=1, le=12), top_n: int | None = Query(None, ge=1, le=5),
-                          trading_days: int | None = Query(None, ge=1, le=MAX_WINDOW_DAYS),
-                          lookback_years: int | None = Query(None, ge=1), symbol: str = "SPY"):
-        if mode == "seasonality":
-            viewer = request.state.access_scope == "remote"
-            ticker = view_symbol(symbol) if viewer else valid_symbol(symbol)
-            data = seasonality.get(ticker, lookback_years or MAX_YEARS, trading_days or 21)
-            return {**data, "coverage": public_coverage(data["coverage"])} if viewer else data
-        if mode == "sector_windows":
-            if top_n is not None and top_n > 3:
-                raise HTTPException(status_code=422, detail="Choose 1–3 sectors.")
-            return performance.sector_windows(trading_days or 20, lookback_years or 16, top_n or 3)
-        if year is None:
-            raise HTTPException(status_code=422, detail="Choose a year for calendar returns.")
-        return performance.get(mode, year, month, top_n or 5)
 
     @app.get("/api/attribution")
     def attribution_api(start: str, end: str, sector: str = "", limit: int = Query(10, ge=1, le=50)):
@@ -387,7 +321,7 @@ def create_app(settings: Settings | None = None, adapter=None):
         catalog = [
             {"dataset": "Market", "source": ", ".join(market_sources) or "Not imported", "coverage": "See individual series below",
              "freshness": max((f["updated"] for f in files), default=None), "status": "Available; quality checks below" if files else "Not imported"},
-            {"dataset": "Seasonality prices", "source": ", ".join(sorted({f["source"] for f in research_prices})) or "Tradier",
+            {"dataset": "Fund prices", "source": ", ".join(sorted({f["source"] for f in research_prices})) or "Tradier",
              "coverage": f"{len(research_prices)} of {len(RESEARCH_FUNDS)} benchmark and sector daily series",
              "freshness": max((f["updated"] for f in research_prices), default=None),
              "status": "See daily coverage" if research_prices else "Awaiting prices"},
@@ -407,7 +341,6 @@ def create_app(settings: Settings | None = None, adapter=None):
             {"dataset": "Accounts", "source": "Tradier and separate shadow cash ledger", "coverage": f"{counts['accounts']} live account snapshots; {counts['shadow_orders']} shadow fills; {counts['shadow_pending']} pending; {counts['shadow_archives']} archived accounts",
              "freshness": last_account_activity, "status": "Synchronized" if account_fresh else "Awaiting live sync"},
             {"dataset": "News", "source": "Not connected", "coverage": "None", "freshness": None, "status": "Placeholder"},
-            {"dataset": "Back tests", "source": "Not connected", "coverage": "None", "freshness": None, "status": "Placeholder"},
             {"dataset": "Company fundamentals", "source": "Source selection pending", "coverage": "Financial statements and capital structure",
              "freshness": None, "status": "Planned · Phase 2"},
             {"dataset": "Social sentiment", "source": "Source selection pending", "coverage": "Dated company and sector sentiment",
@@ -418,7 +351,7 @@ def create_app(settings: Settings | None = None, adapter=None):
         return {"market": files, "snapshots": snapshots, "imports": imports, "counts": counts, "audit": audit,
                 "catalog": catalog,
                 "notes": ["Coverage endpoints do not prove continuity; gaps and provider adjustments remain unverified.",
-                          "News and backtest datasets are placeholders."]}
+                          "The news dataset is a placeholder."]}
 
     @app.get("/api/database/research")
     def research_inventory():
@@ -572,10 +505,10 @@ def create_app(settings: Settings | None = None, adapter=None):
     # The WAN surface is a set of explicit projections. It never exposes the
     # local control API, account identifiers, settings, database or private notes.
     @app.get("/view/state", include_in_schema=False)
-    def view_state(request: Request):
-        raw = state(request)
-        return {"access_scope": "remote", "settings": {k: raw["settings"].get(k) for k in ("appearance", "top_n")},
-                "sectors": raw["sectors"], "benchmarks": benchmarks, "event_id": raw["event_id"],
+    def view_state():
+        with db.connect() as conn:
+            last_id = conn.execute("SELECT COALESCE(MAX(id),0) FROM events").fetchone()[0]
+        return {"access_scope": "remote", "settings": {"appearance": db.settings().get("appearance")}, "event_id": last_id,
                 "connection": {"auth_mode": settings.auth_mode, "live_orders_enabled": False}}
 
     @app.get("/view/events", include_in_schema=False)
@@ -667,29 +600,6 @@ def create_app(settings: Settings | None = None, adapter=None):
                 if isinstance(value, float) and not math.isfinite(value):
                     position[field] = None
         return {"rows": rows, "note": "Live positions come from Tradier; Shadow positions are simulated. Quotes may be stale."}
-
-    def view_symbol(symbol):
-        value = valid_symbol(symbol)
-        if value not in MARKET_HISTORY_SYMBOLS:
-            raise HTTPException(status_code=403, detail="This series is available locally only.")
-        return value
-
-    def public_coverage(coverage):
-        return {**coverage, "source": "Stored market data"} if coverage else None
-
-    @app.get("/view/bars", include_in_schema=False)
-    def view_bars(symbol: str = "SPY", interval: BarInterval = "1d", start: str | None = None,
-                  end: str | None = None, limit: int = Query(12000, ge=1, le=30000), before: str | None = None):
-        raw = market.read(view_symbol(symbol), interval, start, end, limit, before)
-        return {**raw, "coverage": public_coverage(raw["coverage"])}
-
-    @app.get("/view/sectors", include_in_schema=False)
-    def view_sectors(q: str = "", top_n: int = Query(10, ge=1, le=50)):
-        return sectors(q, top_n)
-
-    @app.get("/view/attribution", include_in_schema=False)
-    def view_attribution(start: str, end: str, sector: str = "", limit: int = Query(10, ge=1, le=50)):
-        return attribution_api(start, end, sector, limit)
 
     @app.get("/{path:path}", include_in_schema=False)
     def frontend(path: str):

@@ -276,7 +276,7 @@ class MarketStore:
                     with self.db.connect() as conn:
                         conn.execute("DELETE FROM market_files WHERE symbol=? AND interval=?", (symbol, interval))
                         conn.execute("DELETE FROM market_anomalies WHERE symbol=? AND interval=?", (symbol, interval))
-                        self.db.event("charts", "market_updated", conn, {"symbol": symbol, "interval": interval})
+                        self.db.event("database", "market_updated", conn, {"symbol": symbol, "interval": interval})
                     self._invalidate(symbol, interval, old_path)
             with self.db.connect() as conn:
                 conn.execute(f"""DELETE FROM corporate_actions WHERE symbol IN ({placeholders})
@@ -365,7 +365,7 @@ class MarketStore:
                     due = time.time() + 5
                     conn.execute("""UPDATE jobs SET next_run=? WHERE name='adjustments' AND enabled=1
                                  AND status!='running' AND next_run>?""", (due, due))
-                self.db.event("charts", "market_updated", conn, {"symbol": symbol, "interval": interval})
+                self.db.event("database", "market_updated", conn, {"symbol": symbol, "interval": interval})
         except BaseException:
             path.unlink(missing_ok=True)
             raise
@@ -427,19 +427,8 @@ class MarketStore:
 
     def daily_endpoint_closes(self, symbols, start, end, adjustment="split_dividend_adjusted"):
         """Read exact daily endpoints in one Parquet query under the generation lock."""
-        return self.daily_closes(symbols, (start, end), adjustment)
-
-    def daily_closes(self, symbols, sessions, adjustment="split_dividend_adjusted"):
-        """Read only the requested daily closes, in one batch for the basket."""
-        if not symbols or not sessions:
+        if not symbols:
             return {}
-        dates = ",".join("?" for _ in sessions)
-        return self._query_daily_closes(symbols, adjustment, f"time IN ({dates})", sessions)
-
-    def daily_closes_between(self, symbols, start, end):
-        return self._query_daily_closes(symbols, None, "time BETWEEN ? AND ?", (start, end))
-
-    def _query_daily_closes(self, symbols, adjustment, predicate, parameters):
         prices = {}
         bounds = history_bounds("SPY")
         with LOCK:
@@ -456,8 +445,8 @@ class MarketStore:
             if mapping:
                 con = duckdb.connect(":memory:")
                 try:
-                    rows = con.execute(f"SELECT filename,time,close FROM read_parquet(?, filename=true) WHERE {predicate}",
-                                       [list(mapping), *parameters]).fetchall()
+                    rows = con.execute("SELECT filename,time,close FROM read_parquet(?, filename=true) WHERE time IN (?,?)",
+                                       [list(mapping), start, end]).fetchall()
                 finally:
                     con.close()
                 symbols_by_file = {}

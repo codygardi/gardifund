@@ -45,7 +45,7 @@ export default function SettingsPage() {
           <div><strong>Live order submission</strong><small>Open or close real positions in Tradier</small></div>
           <span className="connection-pill">DISABLED</span>
         </div>
-        <p className="panel-caption">The dashboard on GitHub Pages shows aggregate account metrics, market charts, and the Back Test placeholder.</p>
+        <p className="panel-caption">The dashboard on GitHub Pages shows aggregate account metrics.</p>
       </section>
       <section className="panel settings-panel appearance-panel"><div className="settings-heading"><div className="settings-icon"><Laptop size={18}/></div><div><h2>Appearance</h2><p>Choose your workspace theme.</p></div></div><div className="theme-options"><button onClick={() => appearance('dark')} className={theme === 'dark' ? 'theme-choice selected' : 'theme-choice'}><Moon size={17}/> Dark {theme === 'dark' && <Check size={15}/>}</button><button onClick={() => appearance('light')} className={theme === 'light' ? 'theme-choice selected' : 'theme-choice'}><Sun size={17}/> Light {theme === 'light' && <Check size={15}/>}</button></div></section>
     </div>

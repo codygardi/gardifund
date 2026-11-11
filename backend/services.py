@@ -70,7 +70,7 @@ def store_holdings(db, as_of, rows, source, note=""):
         conn.execute("INSERT INTO imports(dataset,source,created,status,message) VALUES(?,?,?,?,?)",
                      ("SPY constituents", source[:120], now, "complete", f"{len(cleaned)} rows dated {as_of}; weight {total:.2%}"))
         db.event("investing", "holdings_updated", conn)
-        db.event("charts", "holdings_updated", conn)
+        db.event("database", "holdings_updated", conn)
     return {"as_of": as_of, "count": len(cleaned), "weight": total,
             "classified": sum(1 for r in cleaned if r[3])}
 

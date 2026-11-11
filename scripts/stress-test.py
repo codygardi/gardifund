@@ -32,14 +32,10 @@ def main():
                 time.sleep(.02)
             local=f'http://127.0.0.1:{ports[0]}'
             remote=f'http://127.0.0.1:{ports[1]}'
-            market_rank = '/api/chart-performance?mode=market&year=2026&month=1&top_n=1'
-            sector_rank = '/view/chart-performance?mode=sectors&year=2026&month=1&top_n=5'
-            rank_counts = {market_rank: 1, sector_rank: 5}
             cases=[(local,'GET','/api/state',200),(local,'GET','/api/overview?mode=shadow',200),
                    (local,'GET','/api/discovery',200),(local,'GET','/api/positions',200),
-                   (local,'GET','/api/bars?symbol=SPY&interval=1d',200),
-                   (remote,'GET','/view/overview?mode=live',200),(remote,'GET','/view/bars?symbol=SPY',200),
-                   (local,'GET',market_rank,200),(remote,'GET',sector_rank,200),
+                   (local,'GET','/api/bars?symbol=SPY&interval=1d',200),(local,'GET','/api/database',200),
+                   (remote,'GET','/view/overview?mode=live',200),(remote,'GET','/view/overview?mode=shadow',200),
                    (remote,'GET','/api/state',403),(remote,'GET','/view/database',403),
                    (remote,'POST','/api/shadow/reset',403),(remote,'GET','/view/state',200)]
             with httpx.Client(timeout=20,limits=httpx.Limits(max_connections=16)) as client:
@@ -48,13 +44,9 @@ def main():
                     before=time.perf_counter()
                     try:
                         response=client.request(method,base+path)
-                        okay = response.status_code == expected
-                        if okay and path in rank_counts:
-                            ranked = response.json()
-                            okay = ranked.get('complete') is True and len(ranked.get('rows', [])) == rank_counts[path]
-                        return okay, (time.perf_counter()-before)*1000, path in rank_counts
-                    except (httpx.HTTPError, ValueError):
-                        return False, (time.perf_counter()-before)*1000, path in rank_counts
+                        return response.status_code == expected, (time.perf_counter()-before)*1000
+                    except httpx.HTTPError:
+                        return False, (time.perf_counter()-before)*1000
                 with ThreadPoolExecutor(max_workers=16) as pool:
                     results=list(pool.map(request,range(330)))
             with app.state.db.connect() as conn:
@@ -66,13 +58,12 @@ def main():
             thread.join(timeout=15)
             for sock in sockets: sock.close()
             if thread.is_alive(): raise RuntimeError('QA server did not stop cleanly')
-    durations=sorted(duration for _, duration, _ in results)
+    durations=sorted(duration for _, duration in results)
     report={'created':datetime.now(timezone.utc).isoformat(),'requests':len(results),'concurrency':16,
-            'failures':sum(not okay for okay, _, _ in results),'p50_ms':round(statistics.median(durations),2),
+            'failures':sum(not okay for okay, _ in results),'p50_ms':round(statistics.median(durations),2),
             'p95_ms':round(durations[int(len(durations)*.95)-1],2),'max_ms':round(max(durations),2),
             'elapsed_seconds':round(time.perf_counter()-started,2),'sqlite_integrity':integrity,'journal_mode':journal,
-            'background_workers':worker_count,'temporary_data_removed':not Path(directory).exists(),
-            'performance_requests':sum(ranking for _, _, ranking in results)}
+            'background_workers':worker_count,'temporary_data_removed':not Path(directory).exists()}
     (ROOT/'data'/'verification-stress.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
     print(json.dumps(report))
     if report['failures'] or integrity!='ok' or journal!='wal' or worker_count!=1:

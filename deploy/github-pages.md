@@ -1,6 +1,6 @@
 # Public dashboard on GitHub Pages
 
-Visitors open [GARDiFUND](https://codygardi.github.io/gardifund/) in their browser. The page displays Account, Snapshot, and the Back Test placeholder. The local and public Account views show the same Live and Shadow balances, performance, and position and order counts. Individual positions and orders can be opened in the Windows workspace. The page asks visitors to contact the admin when the Windows app is offline, and reconnects when it becomes available.
+Visitors open [GARDiFUND](https://codygardi.github.io/gardifund/) in their browser. The page displays Account and a Research placeholder. The local and public Account views show the same Live and Shadow balances, performance, and position and order counts. Individual positions and orders can be opened in the Windows workspace. The page asks visitors to contact the admin when the Windows app is offline, and reconnects when it becomes available.
 
 The Windows app serves the full workspace on `127.0.0.1:8765` and public read-only views on `127.0.0.1:8766`. The Worker has a fixed private Tunnel connection to port 8766. Both the Worker and the viewing listener deny controls and writes. The Pages artifact contains static UI assets. It fetches the public projections and SSE updates at runtime.
 
@@ -18,7 +18,7 @@ Approve Wrangler in the Cloudflare account that owns the `gardifund` Worker. Ent
 
 ## Open the dashboard
 
-Open the [public dashboard](https://codygardi.github.io/gardifund/) and check that Account and Snapshot load. Visitors need only this link. Use **Sync account** in the [local workspace](http://127.0.0.1:8765/) to verify the public view receives updates.
+Open the [public dashboard](https://codygardi.github.io/gardifund/) and check that Account and Research load. Visitors need only this link. Use **Sync account** in the [local workspace](http://127.0.0.1:8765/) to verify the public view receives updates.
 
 ```powershell
 .\scripts\check-connections.ps1 -RemoteUrl https://gardifund.codygardi22.workers.dev/

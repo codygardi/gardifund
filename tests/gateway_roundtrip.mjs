@@ -49,23 +49,21 @@ const shadowInitial = await shadow.json();
 assert.equal(shadowInitial.summary.initial, 10000);
 assert.equal(shadowInitial.summary.order_count, 0);
 assert.deepEqual(await localSummary('shadow'), shadowInitial);
-const market = await view('/view/bars?symbol=SPY&interval=1d');
-assert.equal(market.status, 200);
-const firstBars = await market.text();
-assert.equal(JSON.parse(firstBars).bars.at(-1).close, 101);
-assert.doesNotMatch(firstBars, /SYNTHETIC-PRIVATE-SOURCE/);
-assert.equal((await view('/view/bars?symbol=SPY&interval=30m')).status, 422);
 
 // Even a wrongly configured VPC destination must not turn this gateway into a control API.
 const wrongDestination = await view('/view/state', 'GET', binding(QA_LOCAL_ORIGIN));
 assert.equal(wrongDestination.status, 403);
 await wrongDestination.body?.cancel();
 const beforeDenials = calls;
-for (const [method, path] of [['GET', '/api/state'], ['GET', '/api/overview/summary'], ['POST', '/api/shadow/reset'], ['GET', '/view/database']]) {
+const removedViews = ['/view/bars', '/view/sectors', '/view/attribution', '/view/chart-performance'];
+for (const [method, path] of [
+  ['GET', '/api/state'], ['GET', '/api/overview/summary'], ['POST', '/api/shadow/reset'], ['GET', '/view/database'],
+  ...removedViews.map(path => ['GET', path]),
+]) {
   assert.equal((await view(path, method)).status, 403);
 }
 assert.equal(calls, beforeDenials, 'Forbidden requests must not reach the Windows server');
-for (const path of ['/', '/assets/Settings-private.js', '/api/state', '/api/overview/summary', '/view/database']) {
+for (const path of ['/', '/assets/Settings-private.js', '/api/state', '/api/overview/summary', '/view/database', ...removedViews]) {
   const response = await fetch(QA_REMOTE_ORIGIN + path);
   assert.equal(response.status, 403, 'The public listener must also reject non-view routes');
   await response.body?.cancel();
@@ -82,21 +80,19 @@ try {
     .flatMap(frame => frame.split('\n').filter(line => line.startsWith('data: ')))
     .map(line => JSON.parse(line.slice(6)));
   let events = [];
-  while (events.filter(event => event.module === 'overview').length < 2 || !events.some(event => event.module === 'charts')) {
+  while (events.filter(event => event.module === 'overview').length < 2 || !events.some(event => event.module === 'status')) {
     const item = await reader.read();
     assert.equal(item.done, false, 'The real event stream ended before the update');
     text += decoder.decode(item.value, { stream: true });
     assert.ok(text.length < 16384);
     events = readEvents();
   }
-  for (const event of events.filter(event => event.module === 'overview')) {
+  for (const event of events) {
+    assert.ok(['overview', 'status'].includes(event.module));
     assert.equal(event.action, 'updated');
     assert.equal(event.payload, null);
   }
-  const marketEvent = events.find(event => event.module === 'charts');
-  assert.equal(marketEvent.action, 'market_updated');
-  assert.deepEqual(marketEvent.payload, { symbol: 'SPY', interval: '1d' });
-  assert.doesNotMatch(text, /SYNTHETIC-PRIVATE-ID|SYNTHETIC-PRIVATE-NOTE/);
+  assert.doesNotMatch(text, /market_updated|SPY|SYNTHETIC-PRIVATE-ID|SYNTHETIC-PRIVATE-NOTE/);
 } finally {
   await reader.cancel();
 }
@@ -112,9 +108,4 @@ assert.equal(shadowUpdated.summary.open_positions, 1);
 assert.equal(shadowUpdated.summary.order_count, 1);
 assert.ok(!('positions' in shadowUpdated) && !('orders' in shadowUpdated));
 assert.deepEqual(await localSummary('shadow'), shadowUpdated);
-const ranking = await view('/view/chart-performance?mode=market&year=2024&month=1');
-assert.equal(ranking.status, 200);
-const rankingData = await ranking.json();
-assert.equal(rankingData.rows[0].symbol, 'SPY');
-assert.equal(rankingData.series[0].bars.at(-1).close, 103);
-console.log(JSON.stringify({ public_gateway_roundtrip: true, overview_sse_update: true, charts_sse_update: true, local_controls_denied: true }));
+console.log(JSON.stringify({ public_gateway_roundtrip: true, overview_sse_update: true, private_events_redacted: true, local_controls_denied: true }));
